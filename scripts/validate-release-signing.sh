@@ -152,6 +152,9 @@ require_release_bundle_metadata() {
   require_plist_value "$extension/Contents/Info.plist" CFBundleShortVersionString "$release_version"
   require_plist_value "$extension/Contents/Info.plist" CFBundleVersion "$release_build"
   require_plist_value "$extension/Contents/Info.plist" LSMinimumSystemVersion "15.0"
+  require_path "$app/Contents/Resources/LICENSE"
+  require_path "$app/Contents/Resources/NOTICE"
+  require_path "$app/Contents/Resources/Sparkle-LICENSE.txt"
 }
 
 require_sparkle_framework() {
@@ -170,6 +173,8 @@ require_signed_entitlements() {
   require_plist_value "$entitlements" com.apple.security.network.client "true"
   if [[ "$require_listener" == true ]]; then
     require_plist_value "$entitlements" com.apple.security.network.server "true"
+    require_plist_value "$entitlements" com.apple.security.temporary-exception.mach-lookup.global-name:0 "cloud.wesome.wesomecloud-spks"
+    require_plist_value "$entitlements" com.apple.security.temporary-exception.mach-lookup.global-name:1 "cloud.wesome.wesomecloud-spki"
   fi
   if ! /usr/libexec/PlistBuddy -c "Print :com.apple.security.application-groups" "$entitlements" | grep -Fq "$WESOME_CLOUD_DEVELOPMENT_TEAM.cloud.wesome.wesomecloud"; then
     echo "Expected signed entitlements for $bundle to include $WESOME_CLOUD_DEVELOPMENT_TEAM.cloud.wesome.wesomecloud." >&2
@@ -223,9 +228,6 @@ require_contains AppHost/Info.plist "SUPublicEDKey"
 
 release_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' AppHost/Info.plist)"
 release_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' AppHost/Info.plist)"
-if [[ "$manual_updates" == false ]]; then
-  swift run wesomecloud validate-appcast "$WESOME_CLOUD_APPCAST_URL" --version "$release_version" --build "$release_build"
-fi
 
 if ! xcrun notarytool history --keychain-profile "$WESOME_CLOUD_NOTARY_PROFILE" >/dev/null; then
   echo "Could not validate notarytool profile: $WESOME_CLOUD_NOTARY_PROFILE" >&2
@@ -245,9 +247,24 @@ fi
 archive_path="${WESOME_CLOUD_ARCHIVE_PATH:-$PWD/build/WesomeCloud.xcarchive}"
 export_path="${WESOME_CLOUD_EXPORT_PATH:-$PWD/build/export}"
 export_options_path="${WESOME_CLOUD_EXPORT_OPTIONS_PATH:-$PWD/build/ExportOptions.plist}"
-zip_path="${WESOME_CLOUD_ZIP_PATH:-$PWD/build/WesomeCloud.zip}"
+updates_path="${WESOME_CLOUD_UPDATES_PATH:-$PWD/build/updates}"
+zip_path="${WESOME_CLOUD_ZIP_PATH:-$updates_path/WesomeCloud-$release_version.zip}"
 mkdir -p "$(dirname "$archive_path")"
 mkdir -p "$export_path"
+mkdir -p "$(dirname "$zip_path")"
+
+if [[ "$manual_updates" == false ]]; then
+  swift package resolve
+  sparkle_bin="$PWD/.build/artifacts/sparkle/Sparkle/bin"
+  sparkle_account="${WESOME_CLOUD_SPARKLE_ACCOUNT:-cloud.wesome.wesomecloud}"
+  keychain_public_key="$("$sparkle_bin/generate_keys" --account "$sparkle_account" -p)"
+  if [[ "$keychain_public_key" != "$WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY" ]]; then
+    echo "The configured Sparkle public key does not match the signing key in Keychain." >&2
+    exit 2
+  fi
+  download_url_prefix="${WESOME_CLOUD_DOWNLOAD_URL_PREFIX:-https://github.com/patriksimms/wesomecloud/releases/download/v$release_version/}"
+  require_https_url WESOME_CLOUD_DOWNLOAD_URL_PREFIX "$download_url_prefix"
+fi
 
 sed "s/\$(WESOME_CLOUD_DEVELOPMENT_TEAM)/$WESOME_CLOUD_DEVELOPMENT_TEAM/g" \
   AppHost/ExportOptions.plist > "$export_options_path"
@@ -261,7 +278,7 @@ xcodebuild \
   -allowProvisioningUpdates \
   ENABLE_HARDENED_RUNTIME=YES \
   ONLY_ACTIVE_ARCH=NO \
-  'ARCHS=arm64 x86_64' \
+  ARCHS=arm64 \
   DEVELOPMENT_TEAM="$WESOME_CLOUD_DEVELOPMENT_TEAM" \
   CODE_SIGN_IDENTITY="Apple Development" \
   WESOME_CLOUD_APPCAST_URL="$WESOME_CLOUD_APPCAST_URL" \
@@ -291,13 +308,15 @@ exported_app="$export_path/WesomeCloud.app"
 require_release_bundle_metadata "$exported_app"
 require_plist_value "$exported_app/Contents/Info.plist" SUFeedURL "$WESOME_CLOUD_APPCAST_URL"
 require_plist_value "$exported_app/Contents/Info.plist" SUPublicEDKey "$WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY"
+require_plist_value "$exported_app/Contents/Info.plist" SUEnableInstallerLauncherService "true"
+require_plist_value "$exported_app/Contents/Info.plist" SURequireSignedFeed "true"
 require_file_provider_extension "$exported_app"
 require_sparkle_framework "$exported_app"
 codesign --verify --deep --strict --verbose=2 "$exported_app"
 for binary in "$exported_app/Contents/MacOS/WesomeCloud" "$exported_app/Contents/PlugIns/WesomeFileProviderExtension.appex/Contents/MacOS/WesomeFileProviderExtension"; do
-  architectures=" $(lipo -archs "$binary") "
-  if [[ "$architectures" != *" arm64 "* || "$architectures" != *" x86_64 "* ]]; then
-    echo "Expected Apple Silicon and Intel code in $binary" >&2
+  architectures="$(lipo -archs "$binary")"
+  if [[ "$architectures" != "arm64" ]]; then
+    echo "Expected only Apple Silicon code in $binary" >&2
     exit 2
   fi
 done
@@ -335,8 +354,23 @@ spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg
 require_nonempty_file "$zip_path"
 require_zip_contains_app "$zip_path"
 if [[ "$manual_updates" == false ]]; then
+  mkdir -p "$updates_path"
+  if [[ "$(dirname "$zip_path")" != "$updates_path" ]]; then
+    echo "WESOME_CLOUD_ZIP_PATH must be inside WESOME_CLOUD_UPDATES_PATH for appcast generation." >&2
+    exit 2
+  fi
+  appcast_path="$updates_path/appcast.xml"
+  # Sign the final ZIP after stapling. Preparing a release never needs a live feed.
+  "$sparkle_bin/generate_appcast" --account "$sparkle_account" \
+    --download-url-prefix "$download_url_prefix" \
+    --versions "$release_build" --maximum-deltas 0 \
+    -o "$appcast_path" "$updates_path"
+  "$sparkle_bin/sign_update" --account "$sparkle_account" --verify "$appcast_path"
   zip_length="$(wc -c < "$zip_path" | tr -d ' ')"
-  swift run wesomecloud validate-appcast "$WESOME_CLOUD_APPCAST_URL" --version "$release_version" --build "$release_build" --download-length "$zip_length"
+  swift run wesomecloud validate-appcast "$appcast_path" --version "$release_version" --build "$release_build" --download-length "$zip_length"
+  zip_signature="$(/usr/bin/xmllint --xpath "string(/rss/channel/item[*[local-name()='version']='$release_build']/enclosure/@*[local-name()='edSignature'])" "$appcast_path")"
+  "$sparkle_bin/sign_update" --account "$sparkle_account" --verify "$zip_path" "$zip_signature"
+  echo "Locally prepared appcast: $appcast_path"
 fi
 
 echo "Signed and notarized app validated at $exported_app"

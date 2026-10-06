@@ -20,17 +20,26 @@ targets:
     platform: macOS
     sources:
       - path: AppHost/WesomeCloudApp
+      - path: LICENSE
+        buildPhase: resources
+      - path: NOTICE
+        buildPhase: resources
+      - path: docs/Sparkle-LICENSE.txt
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: cloud.wesome.wesomecloud
         PRODUCT_NAME: WesomeCloud
         SWIFT_VERSION: "6.0"
         INFOPLIST_FILE: AppHost/Info.plist
+        WESOME_CLOUD_APPCAST_URL: https://patriksimms.github.io/wesomecloud/appcast.xml
+        WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY: fOPlElKk/tNy/Qwe0N5P0EOMPobANYQYGYfRCqb4zME=
       configs:
         Debug:
           CODE_SIGN_ENTITLEMENTS: AppHost/WesomeCloud-Debug.entitlements
           ENABLE_DEBUG_DYLIB: NO
         Release:
+          ARCHS: arm64
           ENABLE_HARDENED_RUNTIME: YES
           CODE_SIGN_ENTITLEMENTS: AppHost/WesomeCloud.entitlements
     dependencies:
@@ -56,6 +65,7 @@ targets:
         Debug:
           CODE_SIGN_ENTITLEMENTS: AppHost/WesomeFileProviderExtension-Debug.entitlements
         Release:
+          ARCHS: arm64
           ENABLE_HARDENED_RUNTIME: YES
           CODE_SIGN_ENTITLEMENTS: AppHost/WesomeFileProviderExtension.entitlements
     dependencies:

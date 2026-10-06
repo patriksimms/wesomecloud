@@ -55,23 +55,44 @@ and storing notarization credentials in Keychain:
 export WESOME_CLOUD_DEVELOPMENT_TEAM=YOURTEAMID
 export WESOME_CLOUD_SIGNING_IDENTITY="Developer ID Application: Your Name (YOURTEAMID)"
 export WESOME_CLOUD_NOTARY_PROFILE=wesomecloud-notary
+export WESOME_CLOUD_APPCAST_URL=https://your-domain.test/appcast.xml
+export WESOME_CLOUD_SPARKLE_ACCOUNT=cloud.wesome.wesomecloud
+
+swift package resolve
+.build/artifacts/sparkle/Sparkle/bin/generate_keys --account "$WESOME_CLOUD_SPARKLE_ACCOUNT"
+export WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY="$(.build/artifacts/sparkle/Sparkle/bin/generate_keys --account "$WESOME_CLOUD_SPARKLE_ACCOUNT" -p)"
 
 scripts/generate-xcode-project.sh
-scripts/validate-release-signing.sh --archive --manual-updates
+scripts/validate-release-signing.sh --archive
 ```
 
 Use your own team and certificate if distributing under another membership.
-`--manual-updates` leaves Sparkle unconfigured; testers install later versions
-manually. Without that flag, also configure `WESOME_CLOUD_APPCAST_URL` and
-`WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY` for a signed HTTPS Sparkle feed. The validator
-checks the feed's version, build, signature metadata, and final ZIP length.
+The Sparkle private key stays in Keychain under the configured account. Do not
+export it or add it to the repository. The public key and future HTTPS feed URL
+are build settings; the feed does not need to be online to prepare a release.
+For local configuration, an ignored `.envrc` can export these settings directly.
+Run `source .envrc` before building, or allow it through direnv.
 
-The script archives both Apple Silicon and Intel code with Hardened Runtime,
+`--manual-updates` leaves Sparkle unconfigured; testers install later versions
+manually. It also skips appcast generation and Sparkle signing.
+
+The script archives Apple Silicon code with Hardened Runtime,
 then exports with Developer ID signing and automatic distribution provisioning.
-It creates a signed `build/WesomeCloud-0.1.0.dmg` containing WesomeCloud and an
+It creates a signed `build/WesomeCloud-<version>.dmg` containing WesomeCloud and an
 Applications shortcut, submits it to Apple, staples the notarization ticket,
 and verifies Gatekeeper acceptance. It also staples the exported app and creates
-`build/WesomeCloud.zip`. The filename follows the app's release version.
+`build/updates/WesomeCloud-<version>.zip`. The filenames follow the app's release
+version. Increase `CFBundleVersion` in both host plists for every new build and
+keep their displayed versions in sync.
+
+After stapling, Sparkle generates `build/updates/appcast.xml` and signs both the
+feed and final ZIP using Keychain. The script verifies their signatures and
+checks the appcast version, build, and ZIP length locally. Download URLs default
+to this repository's GitHub release for `v<version>`; override
+`WESOME_CLOUD_DOWNLOAD_URL_PREFIX` when using another download location.
+This script prepares artifacts only. It never creates a GitHub release, uploads
+files, or publishes the feed. A first install and a version-to-version Sparkle
+update still need validation on a separate Mac with a test account.
 
 Distribute these artifacts only after the script succeeds. Keep the app inside
 its ZIP or DMG when transferring it. Users need macOS 15 or later and drag

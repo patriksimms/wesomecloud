@@ -32,6 +32,7 @@ xcuserdata/
 .env.*
 !.env.example
 .envrc.local
+/.envrc
 *.p12
 *.pfx
 *.mobileprovision

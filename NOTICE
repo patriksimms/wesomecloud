@@ -1,7 +1,10 @@
 WesomeCloud
 
-This version was heavily inspired by, copied from, and developed with reference
-to the ownCloud Desktop Client: https://github.com/owncloud/client
+The ownCloud Desktop Client was a behavior and architecture reference:
+https://github.com/owncloud/client
+
+Its source code was not copied or translated into this native Swift
+implementation.
 
 Credit belongs to the ownCloud Desktop Client authors and contributors for the
 upstream work. WesomeCloud adapts that work and its synchronization concepts to
