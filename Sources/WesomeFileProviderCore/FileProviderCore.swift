@@ -124,15 +124,18 @@ public struct ProviderItem: Equatable, Sendable, Identifiable {
     }
 
     private static func metadataFingerprint(_ item: RemoteItem) -> String {
-        [
-            capabilities(for: item).map(\.rawValue).sorted().joined(separator: ","),
+        let capabilityValues = capabilities(for: item).map(\.rawValue).sorted().joined(separator: ",")
+        let createdAt = item.createdAt?.timeIntervalSince1970.description ?? ""
+        let modifiedAt = item.modifiedAt?.timeIntervalSince1970.description ?? ""
+        let components: [String] = [
+            capabilityValues,
             item.name,
             item.parentID ?? "",
             item.permissions ?? "",
             String(item.size ?? -1),
             item.contentType ?? "",
-            item.createdAt?.timeIntervalSince1970.description ?? "",
-            item.modifiedAt?.timeIntervalSince1970.description ?? "",
+            createdAt,
+            modifiedAt,
             item.etag ?? "",
             item.fileID ?? "",
             item.checksum ?? "",
@@ -140,7 +143,8 @@ public struct ProviderItem: Equatable, Sendable, Identifiable {
             String(item.quotaUsedBytes ?? -1),
             String(item.quotaAvailableBytes ?? -1),
             item.privateLink?.absoluteString ?? "",
-        ].joined(separator: "|")
+        ]
+        return components.joined(separator: "|")
     }
 
     private static func capabilities(for item: RemoteItem) -> Set<ProviderCapability> {
