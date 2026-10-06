@@ -48,6 +48,55 @@ scripts/validate-packaging.sh --require-generated
 scripts/validate-packaging.sh --require-generated --release
 ```
 
+## Publish a new version
+
+On the configured signing Mac, commit your code changes, then run:
+
+```sh
+source .envrc
+scripts/release patch
+# Or: scripts/release minor / scripts/release major
+```
+
+Like `npm version`, patch increments the last component, minor resets patch to
+zero, and major resets minor and patch to zero. An explicit higher version also
+works, for example `scripts/release 0.3.0`. Both plists are updated together;
+the integer build number increases past both the local and published build.
+
+The command runs Swift tests and packaging checks, builds/signs/notarizes the
+app and DMG, and generates a signed Sparkle feed in a version-specific folder.
+It creates a release commit and annotated `v<version>` tag, atomically pushes
+the current branch and tag to origin, uploads the DMG, ZIP, exact tagged source,
+licenses and checksums to a draft GitHub release, and verifies downloaded assets.
+It then publishes the release and updates the download page and feed together
+on `gh-pages`. It waits for GitHub Pages to serve the expected files.
+
+```sh
+scripts/release patch --dry-run
+scripts/release minor --stable --notes-file /path/to/release-notes.md
+scripts/release 0.1.4 --resume
+```
+
+Releases default to previews. `--stable` publishes a regular release. Dry runs
+are read-only and offline; their build number is a local estimate. Resume uses
+the existing tag and checked artifacts without rebuilding or bumping again.
+Keep the same release type when resuming, including `--stable` if originally
+used. If preparation fails before the commit, version edits are restored;
+inspect/remove the failed `build/releases/v<version>` directory before retrying.
+If publication fails, the command prints the exact resume command. Keep that
+folder until publication completes. Existing public assets are never replaced.
+
+Requirements: Python 3.9 or later, Git, authenticated `gh`, Swift/Xcode,
+XcodeGen, the configured `.envrc`, and signing/notarization/Sparkle credentials
+in Keychain. The command targets the GitHub repository at `origin` and requires
+HTTPS GitHub Pages from `gh-pages` at the repository root. It does not create
+VMs or validate live Finder syncing; test your application changes before
+releasing. Release builds remain local rather than running automatically in CI.
+
+Run the release-tool tests with `python3 -m unittest discover -s scripts/tests`.
+
+## Manual artifact preparation
+
 Signed beta DMG and ZIP, after creating a Developer ID Application certificate
 and storing notarization credentials in Keychain:
 

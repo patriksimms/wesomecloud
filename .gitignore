@@ -39,3 +39,6 @@ xcuserdata/
 *.provisionprofile
 *.key
 AuthKey_*.p8
+
+# Python release-tool caches
+__pycache__/
