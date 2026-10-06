@@ -203,7 +203,8 @@ public struct ProductionAppFactory: Sendable {
         let scheduler = makeBackgroundSyncScheduler(components: components)
         return WesomeCloudViewModel(
             model: components.appModel,
-            manualSync: BackgroundManualSyncRunner(scheduler: scheduler)
+            manualSync: BackgroundManualSyncRunner(scheduler: scheduler),
+            tracking: PostHogTracking(configuration: .fromBundle())
         )
     }
 

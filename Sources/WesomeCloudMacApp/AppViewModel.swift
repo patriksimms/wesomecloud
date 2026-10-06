@@ -133,7 +133,9 @@ public final class WesomeCloudViewModel {
     public private(set) var notifications: [AppNotification] = []
     public private(set) var diagnostics: [DiagnosticEvent] = []
     public private(set) var files: [AppFileItem] = []
-    public private(set) var issues: [SyncIssue] = []
+    public private(set) var issues: [SyncIssue] = [] {
+        didSet { tracking.captureSyncIssues(issues) }
+    }
     public private(set) var conflicts: [AppConflict] = []
     public private(set) var transfers: [AppTransfer] = []
     public private(set) var storage: [AppAccountStorage] = []
@@ -153,19 +155,65 @@ public final class WesomeCloudViewModel {
     private let fileRevealer: FileRevealing
     private let urlOpener: URLOpening
     private let manualSync: ManualSyncRunning?
+    public let tracking: PostHogTracking
+    public private(set) var trackingPreferencesLoaded = false
+    public private(set) var isSavingTrackingConsent = false
+    private var isSavingPreferences = false
+    private var isInitializingTracking = false
 
     public init(
         model: WesomeCloudAppModel,
         clipboard: ClipboardWriting = SystemClipboardWriter(),
         fileRevealer: FileRevealing = SystemFileRevealer(),
         urlOpener: URLOpening = SystemURLOpener(),
-        manualSync: ManualSyncRunning? = nil
+        manualSync: ManualSyncRunning? = nil,
+        tracking: PostHogTracking = PostHogTracking()
     ) {
         self.model = model
         self.clipboard = clipboard
         self.fileRevealer = fileRevealer
         self.urlOpener = urlOpener
         self.manualSync = manualSync
+        self.tracking = tracking
+    }
+
+    public func initializeTracking() async {
+        guard !trackingPreferencesLoaded, !isInitializingTracking else { return }
+        isInitializingTracking = true
+        defer { isInitializingTracking = false }
+        do {
+            preferences = try await model.loadPreferences()
+            tracking.setConsent(preferences.trackingConsent)
+            trackingPreferencesLoaded = true
+            tracking.capture(.appOpened)
+        } catch {
+            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+        }
+    }
+
+    public func setTrackingConsent(_ consent: TrackingConsent) async -> Bool {
+        guard consent != .notAsked, !isSavingTrackingConsent else { return false }
+        // Revocation takes effect before disk I/O, including when persistence fails.
+        if consent != .allowed { tracking.setConsent(consent) }
+        guard !isSavingPreferences else {
+            lastErrorMessage = "Settings are being saved. Please try your tracking choice again."
+            return false
+        }
+        isSavingTrackingConsent = true
+        defer { isSavingTrackingConsent = false }
+        do {
+            var updated = try await model.loadPreferences()
+            updated.trackingConsent = consent
+            try await model.savePreferences(updated)
+            preferences = updated
+            tracking.setConsent(consent)
+            trackingPreferencesLoaded = true
+            lastErrorMessage = nil
+            return true
+        } catch {
+            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return false
+        }
     }
 
     public func dashboardContent(selectedAccountID: UUID?) -> DashboardContent {
@@ -188,14 +236,19 @@ public final class WesomeCloudViewModel {
     }
 
     public func restoreFinderLocations() async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.restoreFinderLocations)
         do {
             try await model.restoreFinderLocations()
         } catch {
+            tracking.captureError(error, operation: .restoreFinderLocations, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func refresh() async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.refresh)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -215,11 +268,14 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .refresh, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func syncNow() async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.syncNow)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -243,11 +299,14 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .syncNow, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func addAccount(serverURL: URL, username: String, appPassword: String) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.addAccount)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -268,11 +327,14 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .addAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func addOAuthAccount(serverURL: URL, authenticator: OAuthAuthenticating) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.addOAuthAccount)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -293,11 +355,14 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .addOAuthAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func reconnectAccount(_ accountID: UUID, appPassword: String) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.reconnectAccount)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -318,11 +383,14 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .reconnectAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func syncSpace(_ space: AppSpace) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.syncSpace)
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
@@ -344,11 +412,14 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .syncSpace, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func removeSpace(_ space: AppSpace) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.removeSpace)
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
@@ -370,11 +441,14 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .removeSpace, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func dismissNotification(_ notification: AppNotification) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.dismissNotification)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -390,11 +464,14 @@ public final class WesomeCloudViewModel {
             updateStatus = snapshot.updateStatus
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .dismissNotification, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func removeAccount(_ accountID: UUID) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.removeAccount)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -415,16 +492,24 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .removeAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func savePreferences(_ preferences: AppPreferences) async {
+        guard !isSavingTrackingConsent, !isSavingPreferences else { return }
+        isSavingPreferences = true
+        defer { isSavingPreferences = false }
+        let trackingSession = tracking.sessionID
         isLoading = true
         defer { isLoading = false }
         do {
+            var preferences = preferences
+            preferences.trackingConsent = try await model.loadPreferences().trackingConsent
             try await model.savePreferences(preferences)
             self.preferences = preferences
+            tracking.capture(.savePreferences)
             let snapshot = try await model.loadSnapshot()
             spaces = snapshot.spaces
             notifications = snapshot.notifications
@@ -439,6 +524,7 @@ public final class WesomeCloudViewModel {
             lastCreatedShare = snapshot.lastCreatedShare
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .savePreferences, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
@@ -454,6 +540,8 @@ public final class WesomeCloudViewModel {
     }
 
     public func exportDiagnostics(to directory: URL) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.exportDiagnostics)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -472,6 +560,7 @@ public final class WesomeCloudViewModel {
             lastCreatedShare = snapshot.lastCreatedShare
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .exportDiagnostics, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
@@ -487,6 +576,8 @@ public final class WesomeCloudViewModel {
     }
 
     public func clearIssue(_ issue: SyncIssue) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.clearIssue)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -506,11 +597,14 @@ public final class WesomeCloudViewModel {
             lastCreatedShare = snapshot.lastCreatedShare
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .clearIssue, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func resolveConflict(_ conflict: AppConflict, decision: ConflictResolutionDecision, resolvedName: String? = nil) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.resolveConflict)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -530,11 +624,14 @@ public final class WesomeCloudViewModel {
             lastCreatedShare = snapshot.lastCreatedShare
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .resolveConflict, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func checkForUpdates() async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.checkForUpdates)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -549,11 +646,14 @@ public final class WesomeCloudViewModel {
             lastCreatedShare = snapshot.lastCreatedShare
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .checkForUpdates, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func setAvailabilityIntent(_ intent: AvailabilityIntent, for file: AppFileItem) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.setAvailabilityIntent)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -573,11 +673,14 @@ public final class WesomeCloudViewModel {
             lastCreatedShare = snapshot.lastCreatedShare
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .setAvailabilityIntent, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func createPublicLink(for file: AppFileItem) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.createPublicLink)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -595,11 +698,14 @@ public final class WesomeCloudViewModel {
             updateStatus = snapshot.updateStatus
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .createPublicLink, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func refreshPublicLinks(for file: AppFileItem) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.refreshPublicLinks)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -616,11 +722,14 @@ public final class WesomeCloudViewModel {
             updateStatus = snapshot.updateStatus
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .refreshPublicLinks, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func deletePublicLink(_ link: AppPublicLink) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.deletePublicLink)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -637,17 +746,20 @@ public final class WesomeCloudViewModel {
             updateStatus = snapshot.updateStatus
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .deletePublicLink, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
 
     public func copyPublicLink(_ link: AppPublicLink) {
+        tracking.capture(.copyPublicLink)
         clipboard.copy(link.share.url.absoluteString)
         lastCopiedPublicLink = link.share
         lastErrorMessage = nil
     }
 
     public func revealInFinder(_ file: AppFileItem) {
+        tracking.capture(.revealInFinder)
         guard let url = file.item.materializedURL else {
             lastErrorMessage = "File is not downloaded yet."
             return
@@ -658,11 +770,14 @@ public final class WesomeCloudViewModel {
     }
 
     public func openServerInBrowser(_ account: PersistedAccountRecord) {
+        tracking.capture(.openServerInBrowser)
         urlOpener.open(account.account.serverURL)
         lastErrorMessage = nil
     }
 
     public func copyPrivateLink(for file: AppFileItem) async {
+        let trackingSession = tracking.sessionID
+        tracking.capture(.copyPrivateLink)
         isLoading = true
         defer { isLoading = false }
         do {
@@ -681,6 +796,7 @@ public final class WesomeCloudViewModel {
             updateStatus = snapshot.updateStatus
             lastErrorMessage = nil
         } catch {
+            tracking.captureError(error, operation: .copyPrivateLink, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
     }
