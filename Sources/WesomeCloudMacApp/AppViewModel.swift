@@ -159,6 +159,7 @@ public final class WesomeCloudViewModel {
     public private(set) var trackingPreferencesLoaded = false
     public private(set) var isSavingTrackingConsent = false
     private var isSavingPreferences = false
+    private var trackingConsentSaveWaiter: CheckedContinuation<Void, Never>?
     private var isInitializingTracking = false
 
     public init(
@@ -195,12 +196,11 @@ public final class WesomeCloudViewModel {
         guard consent != .notAsked, !isSavingTrackingConsent else { return false }
         // Revocation takes effect before disk I/O, including when persistence fails.
         if consent != .allowed { tracking.setConsent(consent) }
-        guard !isSavingPreferences else {
-            lastErrorMessage = "Settings are being saved. Please try your tracking choice again."
-            return false
-        }
         isSavingTrackingConsent = true
         defer { isSavingTrackingConsent = false }
+        if isSavingPreferences {
+            await withCheckedContinuation { trackingConsentSaveWaiter = $0 }
+        }
         do {
             var updated = try await model.loadPreferences()
             updated.trackingConsent = consent
@@ -500,7 +500,11 @@ public final class WesomeCloudViewModel {
     public func savePreferences(_ preferences: AppPreferences) async {
         guard !isSavingTrackingConsent, !isSavingPreferences else { return }
         isSavingPreferences = true
-        defer { isSavingPreferences = false }
+        defer {
+            isSavingPreferences = false
+            trackingConsentSaveWaiter?.resume()
+            trackingConsentSaveWaiter = nil
+        }
         let trackingSession = tracking.sessionID
         isLoading = true
         defer { isLoading = false }

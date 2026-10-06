@@ -1494,6 +1494,7 @@ public struct PreferencesView: View {
                         Label("Save", systemImage: "checkmark.circle")
                     }
                     .keyboardShortcut(.defaultAction)
+                    .disabled(isSavingTrackingConsent)
                 }
             }
             .padding(24)

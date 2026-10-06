@@ -50,12 +50,24 @@ private final class TrackingURLProtocol: URLProtocol, @unchecked Sendable {
 private actor FailingTrackingPreferences: PreferencesRepository {
     var preferences = AppPreferences()
     var failSave = false
+    private var suspendNextSave = false
+    private var saveContinuation: CheckedContinuation<Void, Never>?
+    var isSaveSuspended: Bool { saveContinuation != nil }
     func load() -> AppPreferences { preferences }
-    func save(_ preferences: AppPreferences) throws {
+    func save(_ preferences: AppPreferences) async throws {
+        if suspendNextSave {
+            suspendNextSave = false
+            await withCheckedContinuation { saveContinuation = $0 }
+        }
         if failSave { throw WesomeCloudError.unsupported("private.server/secret/file.txt") }
         self.preferences = preferences
     }
     func setFailSave(_ fail: Bool) { failSave = fail }
+    func suspendSave() { suspendNextSave = true }
+    func resumeSave() {
+        saveContinuation?.resume()
+        saveContinuation = nil
+    }
 }
 
 @Suite(.serialized)
@@ -180,6 +192,45 @@ struct PostHogTrackingTests {
         #expect(await viewModel.setTrackingConsent(.declined) == false)
         #expect(tracking.sessionID == nil)
         #expect(viewModel.lastErrorMessage != nil)
+    }
+
+    @Test @MainActor
+    func disablingDuringASettingsSavePersistsBeforeRelaunch() async throws {
+        let (tracking, _) = try makeTracking()
+        let repository = FailingTrackingPreferences()
+        let model = WesomeCloudAppModel(
+            accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
+            domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+            repository: MemoryAccountRepository(),
+            preferencesRepository: repository
+        )
+        let viewModel = WesomeCloudViewModel(model: model, tracking: tracking)
+        await viewModel.initializeTracking()
+        #expect(await viewModel.setTrackingConsent(.allowed))
+        await repository.suspendSave()
+        var settings = viewModel.preferences
+        settings.sync.pollInterval = 180
+        let save = Task { await viewModel.savePreferences(settings) }
+        for _ in 0..<200 {
+            if await repository.isSaveSuspended { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await repository.isSaveSuspended)
+        let decline = Task { await viewModel.setTrackingConsent(.declined) }
+        for _ in 0..<200 {
+            if tracking.consent == .declined { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(tracking.sessionID == nil)
+        await repository.resumeSave()
+        await save.value
+        #expect(await decline.value)
+        #expect(await repository.load().trackingConsent == .declined)
+        #expect(await repository.load().sync.pollInterval == 180)
+        #expect(viewModel.lastErrorMessage == nil)
+        let relaunched = WesomeCloudViewModel(model: model)
+        await relaunched.initializeTracking()
+        #expect(relaunched.tracking.consent == .declined)
     }
 
     @Test @MainActor
