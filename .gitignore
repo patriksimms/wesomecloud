@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+._*
+
+# Build products and local SwiftPM state. Keep Package.resolved.
+/.build/
+/.swiftpm/
+/build/
+DerivedData/
+*.xcarchive
+*.dSYM/
+*.dSYM.zip
+*.xcresult
+*.ipa
+*.dmg
+
+# XcodeGen output. project.yml and scripts are the source of truth.
+/WesomeCloud.xcodeproj/
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Local editor state. Add shared configuration explicitly when needed.
+/.vscode/
+/.idea/
+*.swp
+*~
+
+# Credentials, signing material, and local environment settings
+.env
+.env.*
+!.env.example
+.envrc.local
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.key
+AuthKey_*.p8

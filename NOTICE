@@ -1,0 +1,19 @@
+WesomeCloud
+
+This version was heavily inspired by, copied from, and developed with reference
+to the ownCloud Desktop Client: https://github.com/owncloud/client
+
+Credit belongs to the ownCloud Desktop Client authors and contributors for the
+upstream work. WesomeCloud adapts that work and its synchronization concepts to
+a native Swift macOS application using Apple's File Provider framework.
+WesomeCloud is an independent project, not an official ownCloud client.
+
+WesomeCloud is licensed under the GNU General Public License, version 2 or, at
+your option, any later version (SPDX-License-Identifier: GPL-2.0-or-later).
+See LICENSE for the complete terms, including the disclaimer of warranty.
+Upstream copyright and license notices continue to apply to copied or adapted
+material. This notice does not replace those notices or claim ownership of
+upstream work.
+
+Sparkle is a separately licensed dependency. Its copyright, permission notice,
+and bundled third-party notices are reproduced in docs/Sparkle-LICENSE.txt.
