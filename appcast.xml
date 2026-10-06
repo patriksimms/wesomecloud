@@ -1,22 +1,19 @@
-<?xml version="1.0" standalone="yes"?>
-<!-- sparkle-sign-warning:
+<?xml version="1.0" standalone="yes"?><!-- sparkle-sign-warning:
 IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires re-signing this file with generate_appcast or sign_update! The signed signature will be embedded at the end of this file.
--->
-<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+--><rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>WesomeCloud</title>
         <item>
-            <title>0.1.3</title>
-            <pubDate>Tue, 06 Oct 2026 12:43:48 +0200</pubDate>
-            <sparkle:version>5</sparkle:version>
-            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <title>0.2.0</title>
+            <pubDate>Tue, 06 Oct 2026 15:27:43 +0200</pubDate>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/patriksimms/wesomecloud/releases/download/v0.1.3/WesomeCloud-0.1.3.zip" length="3132775" type="application/octet-stream" sparkle:edSignature="Qr6s6qnX+6M6Ar9I9MPb1lvyNd8VDPHZWOEbcuw4D1dyQpQLIvTXsyeH5XwQNKxVCyhkftPi+jk1hVkbfUyFBg=="/>
+            <enclosure url="https://github.com/patriksimms/wesomecloud/releases/download/v0.2.0/WesomeCloud-0.2.0.zip" length="3180491" type="application/octet-stream" sparkle:edSignature="mBLhfbmN1gtILz/83PHE8wfMPlkSlYHmcpOdM0zForQ3d2YWbxemBlas+Gy9ASicE/vZMZaFAlce41bdBPdhCA=="></enclosure>
         </item>
     </channel>
-</rss>
-<!-- sparkle-signatures:
-edSignature: uUCuQIn0ETrxqenkcG+e2wvtRxEkJXWMtjJsMLSNkc6fto1rsQI70jgWCjsnIXTGif/MUVz870IOMby1/WT3Bw==
-length: 1124
+</rss><!-- sparkle-signatures:
+edSignature: rRKxvJBQsnJI0mKKp39ETkS/jIirDT07hataQxc1VkPey8wpy43s+s/r3ipEmc+htVqZKTcia5KPEw0pn7dtAA==
+length: 1132
 -->
