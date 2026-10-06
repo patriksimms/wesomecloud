@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""Build and publish a local, Keychain-signed WesomeCloud release."""
+import argparse
+import base64
+import fcntl
+import hashlib
+import html
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
+import xml.etree.ElementTree as ET
+
+PLISTS = ("AppHost/Info.plist", "AppHost/WesomeFileProviderExtension-Info.plist")
+
+
+def run(*args, capture=False, input=None, env=None):
+    result = subprocess.run(args, check=True, text=True, input=input, env=env,
+                            stdout=subprocess.PIPE if capture else None)
+    return result.stdout.strip() if capture else None
+
+
+def git(*args):
+    return run("git", *args, capture=True)
+
+
+def api(repo, path, payload=None, method="POST"):
+    args = ["gh", "api", f"repos/{repo}/{path}"]
+    if payload is not None:
+        args += ["--method", method, "--input", "-"]
+    return json.loads(run(*args, capture=True,
+                          input=json.dumps(payload) if payload is not None else None))
+
+
+def version_tuple(value):
+    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value):
+        raise ValueError(f"Invalid version: {value}. Use major.minor.patch.")
+    return tuple(map(int, value.split(".")))
+
+
+def next_version(current, bump):
+    major, minor, patch = version_tuple(current)
+    if bump == "major":
+        return f"{major + 1}.0.0"
+    if bump == "minor":
+        return f"{major}.{minor + 1}.0"
+    if bump == "patch":
+        return f"{major}.{minor}.{patch + 1}"
+    if version_tuple(bump) <= version_tuple(current):
+        raise ValueError("The new version must be greater than the current version.")
+    return bump
+
+
+def metadata():
+    values = []
+    for path in PLISTS:
+        data = plistlib.loads(Path(path).read_bytes())
+        version, build = data["CFBundleShortVersionString"], data["CFBundleVersion"]
+        version_tuple(version)
+        if not re.fullmatch(r"[1-9]\d*", build):
+            raise ValueError(f"{path} must have a positive integer build number.")
+        values.append((version, int(build)))
+    if values[0] != values[1]:
+        raise ValueError("App and File Provider versions/build numbers must match.")
+    return values[0]
+
+
+def bump_plists(version, build):
+    originals = {path: Path(path).read_text() for path in PLISTS}
+    updated = {}
+    for path, text in originals.items():
+        for key, value in (("CFBundleShortVersionString", version), ("CFBundleVersion", str(build))):
+            pattern = rf"(<key>{key}</key>\s*<string>)[^<]*(</string>)"
+            text, count = re.subn(pattern, lambda m: m[1] + value + m[2], text)
+            if count != 1:
+                raise ValueError(f"Expected exactly one {key} in {path}.")
+        updated[path] = text
+    for path, text in updated.items():
+        Path(path).write_text(text)
+    return originals
+
+
+def digest(path):
+    with Path(path).open("rb") as stream:
+        checksum = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            checksum.update(chunk)
+        return checksum.hexdigest()
+
+
+def fetch(url):
+    with urllib.request.urlopen(url, timeout=30) as response:
+        return response.read()
+
+
+def feed_versions(data):
+    return [(item.findtext("{http://www.andymatuschak.org/xml-namespaces/sparkle}shortVersionString"),
+             int(item.findtext("{http://www.andymatuschak.org/xml-namespaces/sparkle}version")))
+            for item in ET.fromstring(data).findall("./channel/item")]
+
+
+def check_feed(data, version, build):
+    for published_version, published_build in feed_versions(data):
+        if version_tuple(published_version) > version_tuple(version) or published_build > build:
+            raise ValueError("The public feed already contains a newer release. Refusing to downgrade it.")
+
+
+def repository():
+    origin = git("remote", "get-url", "origin")
+    match = re.fullmatch(r"(?:git@github.com:|https://github.com/)([\w.-]+/[\w.-]+?)(?:\.git)?", origin)
+    if not match:
+        raise ValueError("origin must point to a GitHub repository using SSH or HTTPS.")
+    return match[1]
+
+
+def release_info(repo, tag):
+    result = subprocess.run(["gh", "api", f"repos/{repo}/releases/tags/{tag}"],
+                            text=True, capture_output=True)
+    if result.returncode == 0:
+        return json.loads(result.stdout)
+    if "HTTP 404" in result.stderr:
+        return None
+    raise ValueError(f"Cannot inspect GitHub release: {result.stderr.strip()}")
+
+
+def publish(repo, branch, version, build, folder, stable):
+    tag = f"v{version}"
+    manifest = json.loads((folder / "manifest.json").read_text())
+    revision = manifest["revision"]
+    if git("rev-parse", "HEAD") != revision:
+        raise ValueError("Resume requires HEAD to be the prepared release commit.")
+    if (manifest["repo"], manifest["branch"]) != (repo, branch):
+        raise ValueError("Resume must use the original repository and branch.")
+    if (manifest["revision"], manifest["version"], manifest["build"], manifest["stable"]) != (revision, version, build, stable):
+        raise ValueError("Release manifest does not match the tag, version, build or release type.")
+    assets = manifest["assets"]
+    for name, expected in assets.items():
+        if digest(folder / name) != expected:
+            raise ValueError(f"Prepared artifact changed: {name}. Refusing to publish.")
+    if digest(folder / "updates/appcast.xml") != manifest["feed_sha256"]:
+        raise ValueError("Prepared appcast changed. Refusing to publish.")
+    check_feed(fetch(manifest["feed_url"]), version, build)
+    if not git("tag", "--list", tag):
+        run("git", "tag", "-a", tag, "-m", f"WesomeCloud {version} build {build}")
+    if git("rev-parse", f"{tag}^{{commit}}") != revision:
+        raise ValueError("The existing tag does not point to the prepared release commit.")
+    run("git", "push", "--atomic", "origin", f"HEAD:refs/heads/{branch}", f"refs/tags/{tag}")
+    releases = release_info(repo, tag)
+    if releases is None:
+        # Draft first: a failed upload must not leave a public, incomplete release.
+        run("gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft",
+            "--target", revision, "--title", f"WesomeCloud {version}" + (" preview" if not stable else ""),
+            "--notes-file", str(folder / "notes.md"), *([] if stable else ["--prerelease"]))
+        releases = api(repo, f"releases/tags/{tag}")
+    existing = {asset["name"] for asset in releases["assets"]}
+    missing = set(assets) - existing
+    if missing and not releases["draft"]:
+        raise ValueError("Published release is missing assets. Refusing to alter it.")
+    if missing:
+        run("gh", "release", "upload", tag, "--repo", repo, *(str(folder / name) for name in sorted(missing)))
+    downloads = folder / "verification"
+    downloads.mkdir(exist_ok=True)
+    run("gh", "release", "download", tag, "--repo", repo, "--dir", str(downloads), "--clobber")
+    for name, expected in assets.items():
+        if digest(downloads / name) != expected:
+            raise ValueError(f"GitHub asset checksum mismatch: {name}.")
+    if releases["draft"]:
+        run("gh", "release", "edit", tag, "--repo", repo, "--draft=false", f"--prerelease={str(not stable).lower()}")
+    # Check anonymous public downloads before pointing users' updaters at them.
+    prefix = f"https://github.com/{repo}/releases/download/{tag}/"
+    for name, expected in assets.items():
+        if hashlib.sha256(fetch(prefix + name)).hexdigest() != expected:
+            raise ValueError(f"Public asset checksum mismatch: {name}.")
+    page_url = manifest["page_url"]
+    feed = (folder / "updates/appcast.xml").read_text()
+    page = f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>WesomeCloud downloads</title></head>
+<body style="max-width:48rem;margin:4rem auto;font:18px/1.5 system-ui;padding:1rem"><main>
+<h1>WesomeCloud</h1><p>Apple Silicon{' preview' if not stable else ''}. macOS 15 or later.</p>
+<p><a href="{html.escape(prefix)}WesomeCloud-{version}.dmg">Download WesomeCloud {version}</a></p>
+<p>Open the DMG and drag WesomeCloud into Applications before launching.</p>
+<p>Existing 0.1.0 and withdrawn 0.1.2 installations need this manual installation once. Future releases can install through Check for Updates.</p>
+<p><a href="https://github.com/{html.escape(repo)}/releases/tag/{tag}">Release notes, source, licenses and checksums</a></p>
+<p><a href="appcast.xml">Signed update feed</a></p></main></body></html>
+'''
+    parent = api(repo, "git/ref/heads/gh-pages")["object"]["sha"]
+    stored_feed = api(repo, f"contents/appcast.xml?ref={parent}")
+    check_feed(base64.b64decode(stored_feed["content"]), version, build)
+    base = api(repo, f"git/commits/{parent}")["tree"]["sha"]
+    tree = api(repo, "git/trees", {"base_tree": base, "tree": [
+        {"path": path, "mode": "100644", "type": "blob", "content": content}
+        for path, content in (("index.html", page), ("appcast.xml", feed))]})
+    commit = api(repo, "git/commits", {"message": f"Publish WesomeCloud {version}", "tree": tree["sha"], "parents": [parent]})
+    api(repo, "git/refs/heads/gh-pages", {"sha": commit["sha"], "force": False}, "PATCH")
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        if fetch(manifest["feed_url"]) == feed.encode() and fetch(page_url) == page.encode():
+            print(f"Released {version} build {build}: {page_url}")
+            return
+        time.sleep(5)
+    raise ValueError("GitHub Pages has not served the new files yet. Resume to retry verification/publication.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("version", help="patch, minor, major, or an explicit higher x.y.z version")
+    parser.add_argument("--dry-run", action="store_true", help="show the plan without builds, writes or network requests")
+    parser.add_argument("--resume", action="store_true", help="continue publishing an already prepared/tagged version")
+    parser.add_argument("--stable", action="store_true", help="publish a regular release instead of a preview")
+    parser.add_argument("--notes-file", type=Path, help="release notes to include instead of the default installation notes")
+    args = parser.parse_args()
+    if args.notes_file:
+        args.notes_file = args.notes_file.resolve()
+    os.chdir(Path(__file__).resolve().parent.parent)
+    current, current_build = metadata()
+    version = args.version if args.resume else next_version(current, args.version)
+    version_tuple(version)
+    branch = git("symbolic-ref", "--short", "HEAD")
+    repo = repository()
+    folder = Path("build/releases") / f"v{version}"
+    if args.dry_run:
+        print(f"{'Resume' if args.resume else 'Release'} {current} ({current_build}) -> {version} "
+              f"({'existing build' if args.resume else current_build + 1}), {'stable' if args.stable else 'preview'}")
+        print(f"Test, sign/notarize, commit/tag v{version}, push {branch} to {repo}, publish assets, then gh-pages.")
+        return
+    with (Path(git("rev-parse", "--git-common-dir")) / "wesomecloud-release.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another release is running in this repository.")
+        if git("status", "--porcelain"):
+            raise ValueError("Commit your changes first. Releases require a clean working tree.")
+        if args.resume:
+            if version != current:
+                raise ValueError("Resume version must match the current plists.")
+            publish(repo, branch, version, current_build, folder, args.stable)
+            return
+        if folder.exists():
+            raise ValueError(f"{folder} already exists. Inspect it before starting another release of this version.")
+        for tool in ("gh", "swift", "xcodebuild", "xcrun", "xcodegen"):
+            if not shutil.which(tool):
+                raise ValueError(f"Required command is missing: {tool}")
+        run("git", "fetch", "origin", "--tags")
+        remote_branch = run("git", "ls-remote", "--heads", "origin", branch, capture=True)
+        if remote_branch:
+            run("git", "merge-base", "--is-ancestor", remote_branch.split()[0], "HEAD")
+        if git("tag", "--list", f"v{version}"):
+            raise ValueError(f"Tag v{version} already exists.")
+        pages = api(repo, "pages")
+        if pages["source"] != {"branch": "gh-pages", "path": "/"} or not pages["html_url"].startswith("https://"):
+            raise ValueError("Expected HTTPS GitHub Pages publishing from gh-pages at the repository root.")
+        page_url = pages["html_url"].rstrip("/") + "/"
+        feed_url = page_url + "appcast.xml"
+        if os.environ.get("WESOME_CLOUD_APPCAST_URL") != feed_url:
+            raise ValueError(f"Load .envrc first. WESOME_CLOUD_APPCAST_URL must equal {feed_url}")
+        if os.environ.get("WESOME_CLOUD_DOWNLOAD_URL_PREFIX"):
+            raise ValueError("Unset WESOME_CLOUD_DOWNLOAD_URL_PREFIX; this command publishes to GitHub Releases.")
+        stored_feed = api(repo, "contents/appcast.xml?ref=gh-pages")
+        published = feed_versions(base64.b64decode(stored_feed["content"]))
+        for published_version, _ in published:
+            if version_tuple(version) <= version_tuple(published_version):
+                raise ValueError("The new version must be greater than every version in the public feed.")
+        build = max([current_build] + [number for _, number in published]) + 1
+        run("scripts/validate-release-signing.sh")
+        notes = args.notes_file.read_text() if args.notes_file else (
+            f"WesomeCloud {version} for Apple Silicon, macOS 15 or later.\n\n"
+            "Open the DMG and drag WesomeCloud into Applications. Existing 0.1.3 or later "
+            "installations can use Check for Updates.\n\n"
+            "Developer ID signed, notarized and stapled. The feed and update ZIP are Sparkle signed. "
+            "Source, licenses and SHA-256 checksums are attached.\n")
+        source_revision = git("rev-parse", "HEAD")
+        originals = bump_plists(version, build)
+        bumped = {path: Path(path).read_text() for path in PLISTS}
+        try:
+            folder.mkdir(parents=True)
+            env = dict(os.environ, WESOME_CLOUD_UPDATES_PATH=str(folder.resolve() / "updates"),
+                       WESOME_CLOUD_ARCHIVE_PATH=str(folder.resolve() / "WesomeCloud.xcarchive"),
+                       WESOME_CLOUD_EXPORT_PATH=str(folder.resolve() / "export"),
+                       WESOME_CLOUD_EXPORT_OPTIONS_PATH=str(folder.resolve() / "ExportOptions.plist"),
+                       WESOME_CLOUD_DMG_PATH=str(folder.resolve() / f"WesomeCloud-{version}.dmg"),
+                       WESOME_CLOUD_ZIP_PATH=str(folder.resolve() / "updates" / f"WesomeCloud-{version}.zip"))
+            run("swift", "test")
+            run("scripts/generate-xcode-project.sh")
+            run("scripts/validate-packaging.sh", "--require-generated")
+            run("scripts/validate-release-signing.sh", "--archive", env=env)
+            if git("rev-parse", "HEAD") != source_revision or git("symbolic-ref", "--short", "HEAD") != branch:
+                raise ValueError("Git HEAD or branch changed during the build. Refusing to release different source.")
+            changed = set(git("diff", "--name-only", "HEAD").splitlines())
+            if changed != set(PLISTS) or git("ls-files", "--others", "--exclude-standard"):
+                raise ValueError("Working tree changed during the build. Commit your changes and rebuild.")
+            if any(Path(path).read_text() != text for path, text in bumped.items()):
+                raise ValueError("Versions changed during the build. Refusing to tag different source.")
+            run("git", "add", *PLISTS)
+            run("git", "commit", "-m", f"chore: release {version}")
+        except BaseException:
+            # Restore only the two version files if preparation fails before a commit.
+            if git("rev-parse", "HEAD") == source_revision and git("diff", "HEAD", "--", *PLISTS):
+                for path, text in originals.items():
+                    if Path(path).read_text() == bumped[path]:
+                        Path(path).write_text(text)
+                run("git", "reset", "--", *PLISTS)
+            print(f"Preparation failed; unchanged release version edits restored. Inspect/remove {folder} before retrying.", file=sys.stderr)
+            raise
+        shutil.copyfile(folder / "updates" / f"WesomeCloud-{version}.zip", folder / f"WesomeCloud-{version}.zip")
+        for source in ("LICENSE", "NOTICE", "docs/Sparkle-LICENSE.txt"):
+            shutil.copyfile(source, folder / Path(source).name)
+        source_name = f"WesomeCloud-{version}-source.tar.gz"
+        run("git", "archive", "--format=tar.gz", f"--prefix=WesomeCloud-{version}/",
+            f"--output={folder / source_name}", "HEAD")
+        names = [f"WesomeCloud-{version}.dmg", f"WesomeCloud-{version}.zip", source_name, "LICENSE", "NOTICE", "Sparkle-LICENSE.txt"]
+        assets = {name: digest(folder / name) for name in names}
+        (folder / "SHA256SUMS.txt").write_text("".join(f"{checksum}  {name}\n" for name, checksum in assets.items()))
+        assets["SHA256SUMS.txt"] = digest(folder / "SHA256SUMS.txt")
+        (folder / "notes.md").write_text(notes)
+        (folder / "manifest.json").write_text(json.dumps({"repo": repo, "branch": branch, "version": version, "build": build,
+            "revision": git("rev-parse", "HEAD"), "stable": args.stable, "assets": assets,
+            "page_url": page_url, "feed_url": feed_url,
+            "feed_sha256": digest(folder / "updates/appcast.xml")}, indent=2) + "\n")
+        print(f"Prepared {version} build {build}. If publication fails: scripts/release {version} --resume"
+              + (" --stable" if args.stable else ""), flush=True)
+        publish(repo, branch, version, build, folder, args.stable)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        print(f"Release failed: {error}", file=sys.stderr)
+        sys.exit(1)

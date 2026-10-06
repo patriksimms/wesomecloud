@@ -48,6 +48,55 @@ scripts/validate-packaging.sh --require-generated
 scripts/validate-packaging.sh --require-generated --release
 ```
 
+## Publish a new version
+
+On the configured signing Mac, commit your code changes, then run:
+
+```sh
+source .envrc
+scripts/release patch
+# Or: scripts/release minor / scripts/release major
+```
+
+Like `npm version`, patch increments the last component, minor resets patch to
+zero, and major resets minor and patch to zero. An explicit higher version also
+works, for example `scripts/release 0.3.0`. Both plists are updated together;
+the integer build number increases past both the local and published build.
+
+The command runs Swift tests and packaging checks, builds/signs/notarizes the
+app and DMG, and generates a signed Sparkle feed in a version-specific folder.
+It creates a release commit and annotated `v<version>` tag, atomically pushes
+the current branch and tag to origin, uploads the DMG, ZIP, exact tagged source,
+licenses and checksums to a draft GitHub release, and verifies downloaded assets.
+It then publishes the release and updates the download page and feed together
+on `gh-pages`. It waits for GitHub Pages to serve the expected files.
+
+```sh
+scripts/release patch --dry-run
+scripts/release minor --stable --notes-file /path/to/release-notes.md
+scripts/release 0.1.4 --resume
+```
+
+Releases default to previews. `--stable` publishes a regular release. Dry runs
+are read-only and offline; their build number is a local estimate. Resume uses
+the existing tag and checked artifacts without rebuilding or bumping again.
+Keep the same release type when resuming, including `--stable` if originally
+used. If preparation fails before the commit, version edits are restored;
+inspect/remove the failed `build/releases/v<version>` directory before retrying.
+If publication fails, the command prints the exact resume command. Keep that
+folder until publication completes. Existing public assets are never replaced.
+
+Requirements: Python 3.9 or later, Git, authenticated `gh`, Swift/Xcode,
+XcodeGen, the configured `.envrc`, and signing/notarization/Sparkle credentials
+in Keychain. The command targets the GitHub repository at `origin` and requires
+HTTPS GitHub Pages from `gh-pages` at the repository root. It does not create
+VMs or validate live Finder syncing; test your application changes before
+releasing. Release builds remain local rather than running automatically in CI.
+
+Run the release-tool tests with `python3 -m unittest discover -s scripts/tests`.
+
+## Manual artifact preparation
+
 Signed beta DMG and ZIP, after creating a Developer ID Application certificate
 and storing notarization credentials in Keychain:
 
@@ -55,29 +104,67 @@ and storing notarization credentials in Keychain:
 export WESOME_CLOUD_DEVELOPMENT_TEAM=YOURTEAMID
 export WESOME_CLOUD_SIGNING_IDENTITY="Developer ID Application: Your Name (YOURTEAMID)"
 export WESOME_CLOUD_NOTARY_PROFILE=wesomecloud-notary
+export WESOME_CLOUD_APPCAST_URL=https://your-domain.test/appcast.xml
+export WESOME_CLOUD_SPARKLE_ACCOUNT=cloud.wesome.wesomecloud
+
+swift package resolve
+.build/artifacts/sparkle/Sparkle/bin/generate_keys --account "$WESOME_CLOUD_SPARKLE_ACCOUNT"
+export WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY="$(.build/artifacts/sparkle/Sparkle/bin/generate_keys --account "$WESOME_CLOUD_SPARKLE_ACCOUNT" -p)"
 
 scripts/generate-xcode-project.sh
-scripts/validate-release-signing.sh --archive --manual-updates
+scripts/validate-release-signing.sh --archive
 ```
 
 Use your own team and certificate if distributing under another membership.
-`--manual-updates` leaves Sparkle unconfigured; testers install later versions
-manually. Without that flag, also configure `WESOME_CLOUD_APPCAST_URL` and
-`WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY` for a signed HTTPS Sparkle feed. The validator
-checks the feed's version, build, signature metadata, and final ZIP length.
+The Sparkle private key stays in Keychain under the configured account. Do not
+export it or add it to the repository. The public key and future HTTPS feed URL
+are build settings; the feed does not need to be online to prepare a release.
+For local configuration, an ignored `.envrc` can export these settings directly.
+Run `source .envrc` before building, or allow it through direnv.
 
-The script archives both Apple Silicon and Intel code with Hardened Runtime,
+`--manual-updates` leaves Sparkle unconfigured; testers install later versions
+manually. It also skips appcast generation and Sparkle signing.
+
+The script archives Apple Silicon code with Hardened Runtime,
 then exports with Developer ID signing and automatic distribution provisioning.
-It creates a signed `build/WesomeCloud-0.1.0.dmg` containing WesomeCloud and an
+It creates a signed `build/WesomeCloud-<version>.dmg` containing WesomeCloud and an
 Applications shortcut, submits it to Apple, staples the notarization ticket,
 and verifies Gatekeeper acceptance. It also staples the exported app and creates
-`build/WesomeCloud.zip`. The filename follows the app's release version.
+`build/updates/WesomeCloud-<version>.zip`. The filenames follow the app's release
+version. Increase `CFBundleVersion` in both host plists for every new build and
+keep their displayed versions in sync.
+
+After stapling, Sparkle generates `build/updates/appcast.xml` and signs both the
+feed and final ZIP using Keychain. The script verifies their signatures and
+checks the appcast version, build, and ZIP length locally. Download URLs default
+to this repository's GitHub release for `v<version>`; override
+`WESOME_CLOUD_DOWNLOAD_URL_PREFIX` when using another download location.
+This script prepares artifacts only. It never creates a GitHub release, uploads
+files, or publishes the feed. A first install and a version-to-version Sparkle
+update still need validation on a separate Mac with a test account.
 
 Distribute these artifacts only after the script succeeds. Keep the app inside
 its ZIP or DMG when transferring it. Users need macOS 15 or later and drag
 WesomeCloud into Applications before launching it. They should not need quarantine
 removal commands. A successful notarization and Gatekeeper check do not replace
 an installation and Finder extension test on a separate Mac.
+
+## Release validation on 2026-10-06
+
+A disposable Apple Silicon macOS 15.7.7 VM validated Finder installation with
+Gatekeeper enabled, followed by an in-app Sparkle update from an internal
+0.1.2 build 4 to 0.1.3 build 5. The update used a localhost test feed signed
+with the production Sparkle key and the exact final notarized ZIP. Both feed
+and archive signatures were accepted, the app replaced itself and relaunched
+from Applications, the File Provider extension registered version 0.1.3, and
+a sentinel file in the app group survived. No sync account was configured, so
+this does not establish live Finder syncing or account migration behavior.
+
+Version 0.1.2 build 3 was withdrawn after the VM caught an updater startup
+error. Signed feeds require `SUVerifyUpdateBeforeExtraction` as well as
+`SURequireSignedFeed`. The exported-bundle validator now checks both settings.
+Existing 0.1.0 and withdrawn 0.1.2 installations require a manual installation
+of the corrected release before they can receive future in-app updates.
 
 ## Current status
 

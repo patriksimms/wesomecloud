@@ -32,9 +32,13 @@ xcuserdata/
 .env.*
 !.env.example
 .envrc.local
+/.envrc
 *.p12
 *.pfx
 *.mobileprovision
 *.provisionprofile
 *.key
 AuthKey_*.p8
+
+# Python release-tool caches
+__pycache__/

@@ -40,9 +40,9 @@ must retain their notices and record the modification date. General credit in
 
 ## Publishing
 
-Before the first public upload, confirm file-specific attribution for copied
-or adapted code. The repository does not yet have an upstream provenance manifest, so its
-notices cannot establish which upstream revisions were used.
+ownCloud was used as a behavior and architecture reference; its source was not
+copied or translated. Any future copied or adapted source needs file-specific
+attribution, including the upstream revision, before publication.
 
 Enable private vulnerability reporting in the GitHub repository settings.
 For binary releases, include `LICENSE`, `NOTICE`, and the Sparkle notices with

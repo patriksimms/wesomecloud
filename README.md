@@ -12,14 +12,15 @@ use or return to online-only storage to free up disk space.
 
 WesomeCloud is a prototype under active development. It includes Finder
 integration, on-demand downloads, offline operations, and ownCloud Infinite Scale
-Spaces support. Signed distribution, real-world Finder behavior, and automatic
-updates still need release validation. Use a test account and disposable files
-while evaluating it.
+Spaces support. Signed and notarized releases support Sparkle updates. Finder
+and synchronization behavior still need wider release validation. Use a test
+account and disposable files while evaluating it.
 
 ## ownCloud credit
 
-**This version was heavily inspired by, copied from, and developed with reference
-to the [ownCloud Desktop Client](https://github.com/owncloud/client).**
+The [ownCloud Desktop Client](https://github.com/owncloud/client) was a behavior
+and architecture reference for this native Swift implementation. Its source
+code was not copied or translated into WesomeCloud.
 
 Credit goes to its authors and contributors for their work on synchronization,
 WebDAV, metadata journals, virtual files, and conflict handling. WesomeCloud
@@ -64,7 +65,9 @@ scripts/validate-packaging.sh --require-generated
 ```
 
 An unsigned build verifies packaging; Finder integration needs a signed app
-and extension. See [development and release notes](docs/development.md) for
+and extension. Release a new version on the signing Mac with
+`scripts/release patch`, `minor`, or `major` after loading `.envrc`. See
+[development and release notes](docs/development.md#publish-a-new-version) for
 signing, notarization, and update configuration.
 
 ## How it is built
