@@ -100,6 +100,23 @@ WesomeCloud into Applications before launching it. They should not need quaranti
 removal commands. A successful notarization and Gatekeeper check do not replace
 an installation and Finder extension test on a separate Mac.
 
+## Release validation on 2026-10-06
+
+A disposable Apple Silicon macOS 15.7.7 VM validated Finder installation with
+Gatekeeper enabled, followed by an in-app Sparkle update from an internal
+0.1.2 build 4 to 0.1.3 build 5. The update used a localhost test feed signed
+with the production Sparkle key and the exact final notarized ZIP. Both feed
+and archive signatures were accepted, the app replaced itself and relaunched
+from Applications, the File Provider extension registered version 0.1.3, and
+a sentinel file in the app group survived. No sync account was configured, so
+this does not establish live Finder syncing or account migration behavior.
+
+Version 0.1.2 build 3 was withdrawn after the VM caught an updater startup
+error. Signed feeds require `SUVerifyUpdateBeforeExtraction` as well as
+`SURequireSignedFeed`. The exported-bundle validator now checks both settings.
+Existing 0.1.0 and withdrawn 0.1.2 installations require a manual installation
+of the corrected release before they can receive future in-app updates.
+
 ## Current status
 
 Implemented:

@@ -310,6 +310,7 @@ require_plist_value "$exported_app/Contents/Info.plist" SUFeedURL "$WESOME_CLOUD
 require_plist_value "$exported_app/Contents/Info.plist" SUPublicEDKey "$WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY"
 require_plist_value "$exported_app/Contents/Info.plist" SUEnableInstallerLauncherService "true"
 require_plist_value "$exported_app/Contents/Info.plist" SURequireSignedFeed "true"
+require_plist_value "$exported_app/Contents/Info.plist" SUVerifyUpdateBeforeExtraction "true"
 require_file_provider_extension "$exported_app"
 require_sparkle_framework "$exported_app"
 codesign --verify --deep --strict --verbose=2 "$exported_app"
