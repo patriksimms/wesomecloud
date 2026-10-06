@@ -8,6 +8,8 @@ its local storage. Virtual files let you browse remote folders in Finder and
 only download content when you need it. Files can stay downloaded for offline
 use or return to online-only storage to free up disk space.
 
+![WesomeCloud showing accounts, Spaces, transfers, and file availability](docs/images/wesomecloud.png)
+
 ## Status
 
 WesomeCloud is a prototype under active development. It includes Finder
