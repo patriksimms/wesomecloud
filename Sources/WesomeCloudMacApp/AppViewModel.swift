@@ -158,6 +158,7 @@ public final class WesomeCloudViewModel {
     public let tracking: PostHogTracking
     public private(set) var trackingPreferencesLoaded = false
     public private(set) var isSavingTrackingConsent = false
+    public private(set) var trackingConsentErrorMessage: String?
     private var isSavingPreferences = false
     private var trackingConsentSaveWaiter: CheckedContinuation<Void, Never>?
     private var isInitializingTracking = false
@@ -208,10 +209,10 @@ public final class WesomeCloudViewModel {
             preferences = updated
             tracking.setConsent(consent)
             trackingPreferencesLoaded = true
-            lastErrorMessage = nil
+            trackingConsentErrorMessage = nil
             return true
         } catch {
-            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            trackingConsentErrorMessage = UserFacingErrorFormatter.message(for: error)
             return false
         }
     }

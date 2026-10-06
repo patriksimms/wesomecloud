@@ -160,7 +160,7 @@ public struct WesomeCloudRootView: View {
         .sheet(isPresented: $showingTrackingConsent) {
             TrackingConsentView(
                 isSaving: viewModel.isSavingTrackingConsent,
-                errorMessage: viewModel.lastErrorMessage
+                errorMessage: viewModel.trackingConsentErrorMessage
             ) { consent in
                 if await viewModel.setTrackingConsent(consent) { showingTrackingConsent = false }
             }
@@ -193,7 +193,7 @@ public struct WesomeCloudRootView: View {
                 form: preferencesForm,
                 trackingConsent: viewModel.tracking.consent,
                 isSavingTrackingConsent: viewModel.isSavingTrackingConsent,
-                trackingErrorMessage: viewModel.lastErrorMessage,
+                trackingErrorMessage: viewModel.trackingConsentErrorMessage,
                 changeTrackingConsent: { await viewModel.setTrackingConsent($0) }
             ) { preferences in
                 await viewModel.savePreferences(preferences)

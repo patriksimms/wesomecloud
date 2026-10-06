@@ -50,10 +50,14 @@ private final class TrackingURLProtocol: URLProtocol, @unchecked Sendable {
 private actor FailingTrackingPreferences: PreferencesRepository {
     var preferences = AppPreferences()
     var failSave = false
+    private var failLoad = false
     private var suspendNextSave = false
     private var saveContinuation: CheckedContinuation<Void, Never>?
     var isSaveSuspended: Bool { saveContinuation != nil }
-    func load() -> AppPreferences { preferences }
+    func load() throws -> AppPreferences {
+        if failLoad { throw WesomeCloudError.unsupported("private account error") }
+        return preferences
+    }
     func save(_ preferences: AppPreferences) async throws {
         if suspendNextSave {
             suspendNextSave = false
@@ -63,6 +67,7 @@ private actor FailingTrackingPreferences: PreferencesRepository {
         self.preferences = preferences
     }
     func setFailSave(_ fail: Bool) { failSave = fail }
+    func setFailLoad(_ fail: Bool) { failLoad = fail }
     func suspendSave() { suspendNextSave = true }
     func resumeSave() {
         saveContinuation?.resume()
@@ -173,6 +178,12 @@ struct PostHogTrackingTests {
         let viewModel = WesomeCloudViewModel(model: model, tracking: tracking)
         await viewModel.initializeTracking()
         #expect(tracking.consent == .notAsked)
+        await repository.setFailLoad(true)
+        await viewModel.refresh()
+        #expect(viewModel.lastErrorMessage != nil)
+        #expect(viewModel.trackingConsentErrorMessage == nil)
+        await repository.setFailLoad(false)
+        await viewModel.refresh()
         await repository.setFailSave(true)
         #expect(await viewModel.setTrackingConsent(.allowed) == false)
         #expect(tracking.sessionID == nil)
@@ -181,17 +192,21 @@ struct PostHogTrackingTests {
         var staleSettings = AppPreferences()
         staleSettings.sync.pollInterval = 180
         await viewModel.savePreferences(staleSettings)
-        #expect(await repository.load().trackingConsent == .allowed)
+        #expect(try await repository.load().trackingConsent == .allowed)
         #expect(await viewModel.setTrackingConsent(.declined))
         staleSettings.trackingConsent = .allowed
         await viewModel.savePreferences(staleSettings)
-        #expect(await repository.load().trackingConsent == .declined)
+        #expect(try await repository.load().trackingConsent == .declined)
         #expect(tracking.sessionID == nil)
         #expect(await viewModel.setTrackingConsent(.allowed))
         await repository.setFailSave(true)
         #expect(await viewModel.setTrackingConsent(.declined) == false)
         #expect(tracking.sessionID == nil)
-        #expect(viewModel.lastErrorMessage != nil)
+        #expect(viewModel.lastErrorMessage == nil)
+        #expect(viewModel.trackingConsentErrorMessage != nil)
+        await viewModel.refresh()
+        #expect(viewModel.lastErrorMessage == nil)
+        #expect(viewModel.trackingConsentErrorMessage != nil)
     }
 
     @Test @MainActor
@@ -225,8 +240,8 @@ struct PostHogTrackingTests {
         await repository.resumeSave()
         await save.value
         #expect(await decline.value)
-        #expect(await repository.load().trackingConsent == .declined)
-        #expect(await repository.load().sync.pollInterval == 180)
+        #expect(try await repository.load().trackingConsent == .declined)
+        #expect(try await repository.load().sync.pollInterval == 180)
         #expect(viewModel.lastErrorMessage == nil)
         let relaunched = WesomeCloudViewModel(model: model)
         await relaunched.initializeTracking()
