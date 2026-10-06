@@ -17,6 +17,7 @@ public struct WesomeCloudRootView: View {
     @State private var selectedAccountID: UUID?
     @State private var showingSetup = false
     @State private var showingSettings = false
+    @State private var showingTrackingConsent = false
 
     public init(
         viewModel: WesomeCloudViewModel,
@@ -140,6 +141,8 @@ public struct WesomeCloudRootView: View {
             )
         }
         .task {
+            await viewModel.initializeTracking()
+            showingTrackingConsent = viewModel.trackingPreferencesLoaded && viewModel.tracking.consent == .notAsked
             await viewModel.refresh()
         }
         .onChange(of: viewModel.accounts.map(\.id)) { _, accountIDs in
@@ -153,6 +156,15 @@ public struct WesomeCloudRootView: View {
         .onChange(of: settingsRequestCount) { _, _ in
             preferencesForm.update(from: viewModel.preferences)
             showingSettings = true
+        }
+        .sheet(isPresented: $showingTrackingConsent) {
+            TrackingConsentView(
+                isSaving: viewModel.isSavingTrackingConsent,
+                errorMessage: viewModel.trackingConsentErrorMessage
+            ) { consent in
+                if await viewModel.setTrackingConsent(consent) { showingTrackingConsent = false }
+            }
+            .interactiveDismissDisabled()
         }
         .sheet(isPresented: $showingSetup) {
             AccountSetupView(form: setupForm) { input in
@@ -177,7 +189,13 @@ public struct WesomeCloudRootView: View {
             .frame(width: 460)
         }
         .sheet(isPresented: $showingSettings) {
-            PreferencesView(form: preferencesForm) { preferences in
+            PreferencesView(
+                form: preferencesForm,
+                trackingConsent: viewModel.tracking.consent,
+                isSavingTrackingConsent: viewModel.isSavingTrackingConsent,
+                trackingErrorMessage: viewModel.trackingConsentErrorMessage,
+                changeTrackingConsent: { await viewModel.setTrackingConsent($0) }
+            ) { preferences in
                 await viewModel.savePreferences(preferences)
                 if viewModel.lastErrorMessage == nil {
                     showingSettings = false
@@ -1375,68 +1393,155 @@ public struct WesomeCloudMenuBarView: View {
 public struct PreferencesView: View {
     @Bindable private var form: PreferencesFormModel
     private let save: (AppPreferences) async -> Void
+    private let trackingConsent: TrackingConsent
+    private let isSavingTrackingConsent: Bool
+    private let trackingErrorMessage: String?
+    private let changeTrackingConsent: (TrackingConsent) async -> Bool
+    @State private var showingTrackingConsent = false
 
-    public init(form: PreferencesFormModel, save: @escaping (AppPreferences) async -> Void) {
+    public init(
+        form: PreferencesFormModel,
+        trackingConsent: TrackingConsent = .notAsked,
+        isSavingTrackingConsent: Bool = false,
+        trackingErrorMessage: String? = nil,
+        changeTrackingConsent: @escaping (TrackingConsent) async -> Bool = { _ in false },
+        save: @escaping (AppPreferences) async -> Void
+    ) {
         self.form = form
+        self.trackingConsent = trackingConsent
+        self.isSavingTrackingConsent = isSavingTrackingConsent
+        self.trackingErrorMessage = trackingErrorMessage
+        self.changeTrackingConsent = changeTrackingConsent
         self.save = save
     }
 
     public var body: some View {
-        Form {
-            Section("Sync") {
-                Toggle("Pause sync", isOn: $form.isSyncPaused)
-                LabeledContent("Remote poll interval") {
-                    Stepper("\(Int(form.pollInterval)) seconds", value: $form.pollInterval, in: 15...3600, step: 15)
+        ScrollView {
+            Form {
+                Section("Sync") {
+                    Toggle("Pause sync", isOn: $form.isSyncPaused)
+                    LabeledContent("Remote poll interval") {
+                        Stepper("\(Int(form.pollInterval)) seconds", value: $form.pollInterval, in: 15...3600, step: 15)
+                    }
+                    LabeledContent("Queue retry interval") {
+                        Stepper("\(Int(form.queueInterval)) seconds", value: $form.queueInterval, in: 5...600, step: 5)
+                    }
+                    LabeledContent("Retry attempts") {
+                        Stepper("\(form.retryMaximumAttempts)", value: $form.retryMaximumAttempts, in: 1...20)
+                    }
+                    LabeledContent("Concurrent transfers") {
+                        Stepper("\(form.maximumConcurrentTransfers)", value: $form.maximumConcurrentTransfers, in: 1...12)
+                    }
                 }
-                LabeledContent("Queue retry interval") {
-                    Stepper("\(Int(form.queueInterval)) seconds", value: $form.queueInterval, in: 5...600, step: 5)
+
+                Section("Files") {
+                    Picker("Default availability", selection: $form.defaultAvailability) {
+                        Text("Online Only").tag(DefaultAvailability.onlineOnly)
+                        Text("Keep Downloaded").tag(DefaultAvailability.alwaysLocal)
+                        Text("System Managed").tag(DefaultAvailability.systemManaged)
+                    }
+                    Toggle("Show hidden files", isOn: $form.showHiddenFiles)
+                    TextField("Ignored filename patterns", text: $form.ignoredFilenamePatternsText, axis: .vertical)
+                        .lineLimit(3...5)
+                    TextField("Excluded remote paths", text: $form.excludedRemotePathsText, axis: .vertical)
+                        .lineLimit(3...5)
                 }
-                LabeledContent("Retry attempts") {
-                    Stepper("\(form.retryMaximumAttempts)", value: $form.retryMaximumAttempts, in: 1...20)
+
+                Section("Diagnostics") {
+                    LabeledContent("Retained events") {
+                        Stepper("\(form.retainEventLimit)", value: $form.retainEventLimit, in: 50...2000, step: 50)
+                    }
+                    Toggle("Include debug events", isOn: $form.includeDebugEvents)
                 }
-                LabeledContent("Concurrent transfers") {
-                    Stepper("\(form.maximumConcurrentTransfers)", value: $form.maximumConcurrentTransfers, in: 1...12)
+
+                Section("Privacy") {
+                    Toggle("Share usage and errors with PostHog", isOn: Binding(
+                        get: { trackingConsent == .allowed },
+                        set: { allowed in
+                            if allowed {
+                                showingTrackingConsent = true
+                            } else {
+                                Task { await changeTrackingConsent(.declined) }
+                            }
+                        }
+                    ))
+                    .disabled(isSavingTrackingConsent)
+                    Text(TrackingConsentView.disclosure)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Changes apply immediately.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let trackingErrorMessage {
+                        Text(trackingErrorMessage).foregroundStyle(.red)
+                    }
+                }
+
+                Section("Updates") {
+                    Toggle("Automatically check for updates", isOn: $form.automaticallyCheckForUpdates)
+                    TextField("Appcast URL", text: $form.appcastURLText)
+                    LabeledContent("Check interval") {
+                        Stepper("\(Int(form.updateCheckInterval / 3600)) hours", value: $form.updateCheckInterval, in: 3600...604_800, step: 3600)
+                    }
+                }
+
+                HStack {
+                    Spacer()
+                    Button {
+                        Task { await save(form.preferences) }
+                    } label: {
+                        Label("Save", systemImage: "checkmark.circle")
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isSavingTrackingConsent)
                 }
             }
-
-            Section("Files") {
-                Picker("Default availability", selection: $form.defaultAvailability) {
-                    Text("Online Only").tag(DefaultAvailability.onlineOnly)
-                    Text("Keep Downloaded").tag(DefaultAvailability.alwaysLocal)
-                    Text("System Managed").tag(DefaultAvailability.systemManaged)
-                }
-                Toggle("Show hidden files", isOn: $form.showHiddenFiles)
-                TextField("Ignored filename patterns", text: $form.ignoredFilenamePatternsText, axis: .vertical)
-                    .lineLimit(3...5)
-                TextField("Excluded remote paths", text: $form.excludedRemotePathsText, axis: .vertical)
-                    .lineLimit(3...5)
+            .padding(24)
+        }
+        .frame(maxHeight: 720)
+        .sheet(isPresented: $showingTrackingConsent) {
+            TrackingConsentView(isSaving: isSavingTrackingConsent, errorMessage: trackingErrorMessage) { consent in
+                if await changeTrackingConsent(consent) { showingTrackingConsent = false }
             }
+            .interactiveDismissDisabled()
+        }
+    }
+}
 
-            Section("Diagnostics") {
-                LabeledContent("Retained events") {
-                    Stepper("\(form.retainEventLimit)", value: $form.retainEventLimit, in: 50...2000, step: 50)
-                }
-                Toggle("Include debug events", isOn: $form.includeDebugEvents)
+public struct TrackingConsentView: View {
+    public static let disclosure = "Share feature usage and error categories to help improve WesomeCloud. PostHog receives a random installation ID and app version. No account details, filenames, paths, file contents, or session recordings are sent."
+    private let isSaving: Bool
+    private let errorMessage: String?
+    private let decide: (TrackingConsent) async -> Void
+
+    public init(
+        isSaving: Bool = false,
+        errorMessage: String? = nil,
+        decide: @escaping (TrackingConsent) async -> Void
+    ) {
+        self.isSaving = isSaving
+        self.errorMessage = errorMessage
+        self.decide = decide
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Share usage and errors?").font(.title2).fontWeight(.semibold)
+            Text(Self.disclosure)
+            Text("Tracking stays off unless you allow it. You can change this anytime in Settings.")
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red)
             }
-
-            Section("Updates") {
-                Toggle("Automatically check for updates", isOn: $form.automaticallyCheckForUpdates)
-                TextField("Appcast URL", text: $form.appcastURLText)
-                LabeledContent("Check interval") {
-                    Stepper("\(Int(form.updateCheckInterval / 3600)) hours", value: $form.updateCheckInterval, in: 3600...604_800, step: 3600)
-                }
-            }
-
             HStack {
+                Button("Don't Allow") { Task { await decide(.declined) } }
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button {
-                    Task { await save(form.preferences) }
-                } label: {
-                    Label("Save", systemImage: "checkmark.circle")
-                }
-                .keyboardShortcut(.defaultAction)
+                Button("Allow Tracking") { Task { await decide(.allowed) } }
             }
+            .disabled(isSaving)
         }
         .padding(24)
+        .frame(width: 460)
     }
 }

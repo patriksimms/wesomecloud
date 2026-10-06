@@ -14,6 +14,8 @@ settings:
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: ""
     MACOSX_DEPLOYMENT_TARGET: "15.0"
+    WESOME_CLOUD_POSTHOG_PROJECT_TOKEN: "phc_uyBzD5vrDLTS3oFAvQtGb6FR3Zo3RhWjsWRky8ifWTiK"
+    WESOME_CLOUD_POSTHOG_HOST: "https://eu.i.posthog.com"
 targets:
   WesomeCloud:
     type: application

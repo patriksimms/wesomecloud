@@ -29,6 +29,7 @@ struct WesomeCloudApplication: App {
                 do {
                     let factory = ProductionAppFactory()
                     let model = try factory.makeViewModel()
+                    await model.initializeTracking()
                     await model.restoreFinderLocations()
                     viewModel = model
                     updatePresenter = factory.makeSoftwareUpdatePresenter()

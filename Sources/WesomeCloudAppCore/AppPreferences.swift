@@ -5,17 +5,20 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     public var files: FilePreferences
     public var diagnostics: DiagnosticPreferences
     public var updates: UpdatePreferences
+    public var trackingConsent: TrackingConsent
 
     public init(
         sync: SyncPreferences = SyncPreferences(),
         files: FilePreferences = FilePreferences(),
         diagnostics: DiagnosticPreferences = DiagnosticPreferences(),
-        updates: UpdatePreferences = UpdatePreferences()
+        updates: UpdatePreferences = UpdatePreferences(),
+        trackingConsent: TrackingConsent = .notAsked
     ) {
         self.sync = sync
         self.files = files
         self.diagnostics = diagnostics
         self.updates = updates
+        self.trackingConsent = trackingConsent
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -23,6 +26,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         case files
         case diagnostics
         case updates
+        case trackingConsent
     }
 
     public init(from decoder: Decoder) throws {
@@ -31,6 +35,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         self.files = try container.decodeIfPresent(FilePreferences.self, forKey: .files) ?? FilePreferences()
         self.diagnostics = try container.decodeIfPresent(DiagnosticPreferences.self, forKey: .diagnostics) ?? DiagnosticPreferences()
         self.updates = try container.decodeIfPresent(UpdatePreferences.self, forKey: .updates) ?? UpdatePreferences()
+        self.trackingConsent = try container.decodeIfPresent(TrackingConsent.self, forKey: .trackingConsent) ?? .notAsked
     }
 }
 
@@ -236,4 +241,10 @@ public actor JSONPreferencesRepository: PreferencesRepository {
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try encoder.encode(preferences).write(to: fileURL, options: [.atomic])
     }
+}
+
+public enum TrackingConsent: String, Codable, Sendable {
+    case notAsked
+    case declined
+    case allowed
 }

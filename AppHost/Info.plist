@@ -24,6 +24,10 @@
     <string>Copyright © 2026</string>
     <key>WesomeCloudAppGroupIdentifier</key>
     <string>$(TeamIdentifierPrefix)cloud.wesome.wesomecloud</string>
+    <key>WesomeCloudPostHogProjectToken</key>
+    <string>$(WESOME_CLOUD_POSTHOG_PROJECT_TOKEN)</string>
+    <key>WesomeCloudPostHogHost</key>
+    <string>$(WESOME_CLOUD_POSTHOG_HOST)</string>
     <key>SUEnableAutomaticChecks</key>
     <true/>
     <key>SUEnableInstallerLauncherService</key>
