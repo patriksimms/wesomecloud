@@ -2381,7 +2381,7 @@ private func propfindXML(name: String, fileID: String, etag: String, kind: Remot
 }
 
 private func waitUntil(
-    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    timeoutNanoseconds: UInt64 = 10_000_000_000,
     condition: @escaping () async -> Bool
 ) async throws {
     let start = ContinuousClock.now
