@@ -76,6 +76,7 @@ class Publication(unittest.TestCase):
         os.chdir(self.temp.name)
         self.addCleanup(os.chdir, self.cwd)
         self.real_run = release.run
+        self.original_lookup = release.release_info
         subprocess.run(["git", "init", "-q", "--bare", "remote.git"], check=True)
         subprocess.run(["git", "init", "-q", "-b", "main", "work"], check=True)
         os.chdir("work")
@@ -115,11 +116,15 @@ class Publication(unittest.TestCase):
         patch.object(release, "fetch", side_effect=self.fetch).start()
 
     def command(self, *args, **kwargs):
+        if args[:2] == ("gh", "api"):
+            return self.real_run(*args, **kwargs)
         if args[0] != "gh":
             return self.real_run(*args, **kwargs)
         operation = args[2]
         if operation == "create":
-            self.hosted = {"draft": True, "assets": []}
+            if self.hosted is not None:
+                raise subprocess.CalledProcessError(422, args)
+            self.hosted = {"tag_name": "v0.1.4", "draft": True, "assets": []}
         elif operation == "upload":
             for filename in args[6:]:
                 name = Path(filename).name
@@ -146,6 +151,8 @@ class Publication(unittest.TestCase):
         if path.startswith("contents/appcast.xml?ref="):
             return {"content": base64.b64encode(self.published_feed).decode()}
         if path == "releases/tags/v0.1.4":
+            if self.hosted and self.hosted["draft"]:
+                raise subprocess.CalledProcessError(404, ["gh", "api", path])
             return self.hosted
         if path == "git/ref/heads/gh-pages":
             return {"object": {"sha": "parent"}}
@@ -174,6 +181,24 @@ class Publication(unittest.TestCase):
 
     def publish(self):
         release.publish("test/repo", "main", "0.1.4", 6, self.folder, False)
+
+    def test_existing_draft_resumes_when_tag_endpoint_returns_404(self):
+        self.hosted = {"tag_name": "v0.1.4", "draft": True, "assets": []}
+        original_subprocess_run = subprocess.run
+        def github_request(args, **kwargs):
+            if tuple(args[:2]) == ("gh", "api"):
+                if "/releases/tags/" in args[2]:
+                    return subprocess.CompletedProcess(args, 1, "", "gh: Not Found (HTTP 404)")
+                if args[2].split("?")[0].endswith("/releases"):
+                    return subprocess.CompletedProcess(args, 0, json.dumps([[self.hosted]]), "")
+                raise AssertionError(f"Unexpected GitHub API request: {args}")
+            return original_subprocess_run(args, **kwargs)
+        with patch.object(release, "release_info", self.original_lookup), \
+             patch.object(subprocess, "run", side_effect=github_request):
+            self.publish()
+        self.assertFalse(self.hosted["draft"])
+        self.assertEqual(self.published_feed, feed("0.1.4", 6))
+        self.assertEqual({item["name"] for item in self.hosted["assets"]}, self.expected_asset_names)
 
     def test_partial_upload_keeps_feed_and_can_resume_same_tag(self):
         self.fail_upload = True

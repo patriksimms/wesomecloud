@@ -120,13 +120,10 @@ def repository():
 
 
 def release_info(repo, tag):
-    result = subprocess.run(["gh", "api", f"repos/{repo}/releases/tags/{tag}"],
-                            text=True, capture_output=True)
-    if result.returncode == 0:
-        return json.loads(result.stdout)
-    if "HTTP 404" in result.stderr:
-        return None
-    raise ValueError(f"Cannot inspect GitHub release: {result.stderr.strip()}")
+    # The by-tag endpoint excludes drafts. Authenticated listings include them.
+    pages = json.loads(run("gh", "api", f"repos/{repo}/releases?per_page=100",
+                           "--paginate", "--slurp", capture=True))
+    return next((item for page in pages for item in page if item["tag_name"] == tag), None)
 
 
 def publish(repo, branch, version, build, folder, stable):
@@ -157,7 +154,9 @@ def publish(repo, branch, version, build, folder, stable):
         run("gh", "release", "create", tag, "--repo", repo, "--verify-tag", "--draft",
             "--target", revision, "--title", f"WesomeCloud {version}" + (" preview" if not stable else ""),
             "--notes-file", str(folder / "notes.md"), *([] if stable else ["--prerelease"]))
-        releases = api(repo, f"releases/tags/{tag}")
+        releases = release_info(repo, tag)
+        if releases is None:
+            raise ValueError("The created draft is not visible yet. Resume publication to retry.")
     existing = {asset["name"] for asset in releases["assets"]}
     missing = set(assets) - existing
     if missing and not releases["draft"]:
