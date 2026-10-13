@@ -22,6 +22,7 @@ targets:
     platform: macOS
     sources:
       - path: AppHost/WesomeCloudApp
+      - path: AppHost/Assets.xcassets
       - path: LICENSE
         buildPhase: resources
       - path: NOTICE
@@ -34,6 +35,7 @@ targets:
         PRODUCT_NAME: WesomeCloud
         SWIFT_VERSION: "6.0"
         INFOPLIST_FILE: AppHost/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         WESOME_CLOUD_APPCAST_URL: https://patriksimms.github.io/wesomecloud/appcast.xml
         WESOME_CLOUD_SPARKLE_PUBLIC_ED_KEY: fOPlElKk/tNy/Qwe0N5P0EOMPobANYQYGYfRCqb4zME=
       configs:

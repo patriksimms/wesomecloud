@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    WesomeCloud app icon, variant 2.
+    A Finder-style folder with a cloud badge, like the status badges Finder
+    shows on online-only files. The folder is the Mac, the badge is ownCloud.
+  -->
+  <defs>
+    <linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="1024">
+      <stop offset="0" stop-color="#1F6B45"/>
+      <stop offset="1" stop-color="#0D2B1C"/>
+    </linearGradient>
+    <linearGradient id="folderBack" gradientUnits="userSpaceOnUse" x1="0" y1="300" x2="0" y2="840">
+      <stop offset="0" stop-color="#4FC784"/>
+      <stop offset="1" stop-color="#2A9A5E"/>
+    </linearGradient>
+    <linearGradient id="folderFront" gradientUnits="userSpaceOnUse" x1="0" y1="440" x2="0" y2="840">
+      <stop offset="0" stop-color="#B2ECC9"/>
+      <stop offset="1" stop-color="#74D59F"/>
+    </linearGradient>
+    <linearGradient id="cloud" gradientUnits="userSpaceOnUse" x1="0" y1="640" x2="0" y2="880">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E3F6EA"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect width="1024" height="1024" rx="228"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+  </g>
+
+  <!-- folder and badge, scaled up around the folder centre to fill the tile -->
+  <g transform="translate(512 548) scale(1.16) translate(-532 -596)">
+  <!-- folder back panel with rounded tab; drawn twice, first as a shadow -->
+  <path
+        d="M180 392 Q180 352 220 352 H386 Q408 352 424 368 L454 398 Q464 406 480 406 H844 Q884 406 884 446 V800 Q884 840 844 840 H220 Q180 840 180 800 Z"
+        fill="#000000" opacity="0.28" transform="translate(0 28)"/>
+  <path d="M180 392 Q180 352 220 352 H386 Q408 352 424 368 L454 398 Q464 406 480 406 H844 Q884 406 884 446 V800 Q884 840 844 840 H220 Q180 840 180 800 Z"
+        fill="url(#folderBack)"/>
+  <!-- folder front panel -->
+  <rect x="180" y="456" width="704" height="384" rx="40" fill="url(#folderFront)"/>
+
+  <!--
+    cloud badge. The dark copy is filled and stroked in the same color, so the
+    stroke becomes a uniform outward ring that separates the badge from the folder.
+  -->
+  <g transform="translate(592 626) scale(0.62)">
+    <g fill="#0D2B1C" stroke="#0D2B1C" stroke-width="56" stroke-linejoin="round">
+      <rect x="10" y="170" width="520" height="160" rx="80"/>
+      <circle cx="230" cy="100" r="170"/>
+      <circle cx="400" cy="160" r="135"/>
+      <circle cx="90" cy="190" r="100"/>
+    </g>
+    <g fill="url(#cloud)">
+      <rect x="10" y="170" width="520" height="160" rx="80"/>
+      <circle cx="230" cy="100" r="170"/>
+      <circle cx="400" cy="160" r="135"/>
+      <circle cx="90" cy="190" r="100"/>
+    </g>
+  </g>
+  </g>
+</svg>

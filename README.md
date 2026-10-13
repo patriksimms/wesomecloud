@@ -60,6 +60,10 @@ Choose the `WesomeCloud` scheme. Configure your own development team for both
 app and extension targets before running a signed build. The generated project
 is ignored; shared build settings belong in `project.yml`.
 
+The app icon is rendered from `docs/images/wesomecloud-icon-2.svg`. After
+changing the SVG, run `scripts/generate-app-icon.sh` to refresh the asset
+catalog in `AppHost/Assets.xcassets`.
+
 To validate an unsigned app build:
 
 ```sh
