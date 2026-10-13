@@ -1089,7 +1089,7 @@ public struct SpaceRow: View {
             } label: {
                 Label(space.isSelected ? "Remove from Finder" : "Add to Finder", systemImage: space.isSelected ? "minus" : "plus")
             }
-            .help(space.isSelected ? "Remove this Space from Finder" : "Add this space alongside your other Finder locations")
+            .help(space.isSelected ? "Remove this Space from Finder" : "Add this Space as a folder in WesomeCloud")
         }
         .padding(.vertical, 3)
     }

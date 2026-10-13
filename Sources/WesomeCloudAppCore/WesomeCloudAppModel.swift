@@ -326,6 +326,10 @@ public actor WesomeCloudAppModel {
         )
     }
 
+    private func refreshFinderSelections() async throws {
+        try await domains.refreshSelections(try await repository.records().flatMap(\.domains))
+    }
+
     public func restoreFinderLocations() async throws {
         let accounts = try await repository.records()
         try await domains.restore(accounts.flatMap(\.domains))
@@ -366,7 +370,10 @@ public actor WesomeCloudAppModel {
                     try await domains.updateDomain(domain)
                     renamed.domains[index] = domain
                 }
-                if renamed != record { try await repository.save(renamed) }
+                if renamed != record {
+                    try await repository.save(renamed)
+                    try await refreshFinderSelections()
+                }
                 spaces.append(contentsOf: accountSpaces.map { space in
                     AppSpace(accountID: record.id, accountName: record.account.displayName, space: space,
                              isSelected: record.domains.contains { $0.represents(space) })
@@ -430,13 +437,14 @@ public actor WesomeCloudAppModel {
             throw WesomeCloudError.missingItem(space.accountID.uuidString)
         }
         if record.domains.contains(where: { $0.represents(space.space) }) {
-            try await domains.restore(record.domains)
+            try await domains.restore(try await repository.records().flatMap(\.domains))
             return record
         }
         let domain = try await domains.registerDomain(for: record.account, space: space.space)
         record.domains.append(domain)
         record.lastSyncStatus = SyncStatusSnapshot(state: .idle, message: "Connected to \(space.space.name)")
         try await repository.save(record)
+        try await refreshFinderSelections()
         await diagnostics.record(DiagnosticEvent(category: "Spaces", level: .info, message: "Syncing space \(space.space.name) for \(record.account.displayName)"))
         return record
     }
@@ -453,6 +461,7 @@ public actor WesomeCloudAppModel {
         record.domains.removeAll { $0.id == domain.id }
         record.lastSyncStatus = SyncStatusSnapshot(state: .idle, message: "Removed \(space.space.name) from Finder")
         try await repository.save(record)
+        try await refreshFinderSelections()
         try await removeLocalContent(for: domain.metadataID)
         try await metadataStore?.removeAll(accountID: domain.metadataID)
         publicLinks.removeAll { $0.accountID == record.id && $0.domainID == domain.id }
@@ -483,6 +492,7 @@ public actor WesomeCloudAppModel {
         )
         record.domains = selections
         try await repository.save(record)
+        try await refreshFinderSelections()
         await diagnostics.record(DiagnosticEvent(category: "App", level: .info, message: "Account \(readyMessageName) is ready"))
         return record
     }
@@ -497,6 +507,7 @@ public actor WesomeCloudAppModel {
             try await metadataStore?.removeAll(accountID: metadataID)
         }
         try await repository.delete(accountID: accountID)
+        try await refreshFinderSelections()
         await diagnostics.record(DiagnosticEvent(category: "App", level: .info, message: "Removed account \(accountID.uuidString)"))
     }
 

@@ -249,7 +249,7 @@ func appModelReconnectKeepsSyncedSpaceDomain() async throws {
     let repository = MemoryAccountRepository()
     let model = WesomeCloudAppModel(
         accountSessions: accountService,
-        domains: FileProviderDomainService(manager: domainManager),
+        domains: FileProviderDomainService(manager: UnifiedFileProviderDomainManager(manager: domainManager)),
         repository: repository
     )
     let added = try await model.addAccount(serverURL: URL(string: "https://cloud.example/")!, username: "alice", appPassword: "old")
@@ -266,8 +266,12 @@ func appModelReconnectKeepsSyncedSpaceDomain() async throws {
     let reconnected = try await model.reconnectAccount(accountID: added.id, appPassword: "new")
 
     #expect(reconnected.domains == synced.domains)
-    #expect(Set(try await domainManager.domains().map(\.id)) == Set(synced.domains.map(\.id)))
+    #expect(try await domainManager.domains().map(\.displayName) == ["WesomeCloud"])
     #expect(try await repository.records().map(\.domains) == [synced.domains])
+    try await model.removeSpace(AppSpace(accountID: added.id, accountName: "alice", space: space))
+    #expect(try await domainManager.domains().map(\.displayName) == ["WesomeCloud"])
+    try await model.removeAccount(accountID: added.id)
+    #expect(try await domainManager.domains().isEmpty)
 }
 
 @Test

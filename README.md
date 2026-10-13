@@ -6,7 +6,14 @@ Apple's File Provider framework.
 We want to make large ownCloud Spaces practical on a Mac, even when they exceed
 its local storage. Virtual files let you browse remote folders in Finder and
 only download content when you need it. Files can stay downloaded for offline
-use or return to online-only storage to free up disk space.
+use or return to online-only storage to free up disk space. Selected Spaces appear
+as folders inside a single WesomeCloud location in Finder. Adding or removing a
+Space updates that location without changing the other Spaces.
+
+On upgrading from separate Finder locations, the app preserves downloaded and
+unsynced local files when retiring those locations. macOS returns their preserved
+location, which the app logs. Existing sync caches and upload queues keep their
+original storage IDs.
 
 ![WesomeCloud showing accounts, Spaces, transfers, and file availability](docs/images/wesomecloud.png)
 

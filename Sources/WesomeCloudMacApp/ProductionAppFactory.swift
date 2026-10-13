@@ -248,7 +248,7 @@ public struct ProductionAppFactory: Sendable {
             runner: runner,
             appModel: components.appModel,
             metadataStore: components.metadataStore,
-            changeSignaler: Self.systemChangeSignaler(),
+            changeSignaler: UnifiedFileProviderChangeSignaler(signaler: Self.systemChangeSignaler()),
             configurationProvider: {
                 try await components.preferencesRepository.load().sync.backgroundSyncConfiguration
             }
@@ -283,10 +283,12 @@ public struct ProductionAppFactory: Sendable {
             notificationsFetcher: OwnCloudNotificationsFetcher(),
             diagnostics: diagnostics
         )
+        let systemSignaler = Self.systemChangeSignaler()
+        let unifiedSignaler = UnifiedFileProviderChangeSignaler(signaler: systemSignaler)
         let domains = FileProviderDomainService(
-            manager: Self.systemDomainManager(),
+            manager: UnifiedFileProviderDomainManager(manager: Self.systemDomainManager(), signaler: systemSignaler),
             repository: accountRepository,
-            changeSignaler: Self.systemChangeSignaler(),
+            changeSignaler: unifiedSignaler,
             diagnostics: diagnostics
         )
         let runtimeFactory = ProductionExtensionRuntimeFactory(paths: paths)

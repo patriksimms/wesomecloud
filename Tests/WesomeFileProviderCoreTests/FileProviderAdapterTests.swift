@@ -593,3 +593,57 @@ func providerItemMapsFinderPackagePermissionsAsDocumentCapabilities(canShare: Bo
     #expect(!item.capabilities.contains(.enumerate))
     #expect(!item.capabilities.contains(.addChildren))
 }
+
+@Test
+func spaceAdapterRoutesMutationsAndRejectsCrossSpaceMoves() async throws {
+    let item = ProviderItem(id: "same:id", parentID: nil, filename: "file.txt", kind: .file, size: 1,
+                            path: "/file.txt", contentVersion: Data(), metadataVersion: Data(),
+                            availabilityIntent: .unspecified, capabilities: [.read, .write, .rename, .reparent, .delete])
+    let first = StubProviderBackend(items: [item])
+    let second = StubProviderBackend(items: [item])
+    let adapter = FileProviderAdapter(backend: SpaceFileProviderBackend(spaces: {
+        [ProviderSpace(id: "first", name: "Marketing", backend: { first }),
+         ProviderSpace(id: "second", name: "HR", backend: { second })]
+    }))
+    let folders = try await adapter.enumerate(container: .root).items
+    let marketing = try #require(folders.first { $0.filename == "Marketing" })
+    let file = try #require(try await adapter.enumerate(container: .item(id: marketing.id, path: "/Marketing")).items.first)
+    let localURL = URL(fileURLWithPath: "/tmp/new.txt")
+    _ = try await adapter.modifyItem(file.id, contentsAt: localURL)
+    _ = try await adapter.createFile(named: "new.txt", contentsAt: localURL, in: .item(id: marketing.id, path: "/Marketing"))
+    _ = try await adapter.createFolder(named: "New", in: .item(id: marketing.id, path: "/Marketing"))
+    _ = try await adapter.moveItem(file.id, to: "/Marketing/renamed.txt")
+    try await adapter.deleteItem(file.id)
+    #expect(try await adapter.setAvailabilityIntent(.alwaysLocal, itemID: marketing.id) == [file.id])
+    let changes = try await adapter.changes(in: .item(id: marketing.id, path: "/Marketing"))
+    #expect(changes.updated.first?.id == file.id)
+    #expect(await first.calls == [
+        "enumerate:nil:/", "upload:same:id:/tmp/new.txt", "createFile:new.txt:/tmp/new.txt:nil:/",
+        "createFolder:New:nil:/", "move:same:id:/renamed.txt", "delete:same:id",
+        "enumerate:nil:/", "availability:same:id:alwaysLocal:true", "changes:nil:/",
+    ])
+    await #expect(throws: WesomeCloudError.self) { try await adapter.moveItem(file.id, to: "/HR/renamed.txt") }
+    await #expect(throws: WesomeCloudError.self) { try await adapter.deleteItem(marketing.id) }
+    await #expect(throws: WesomeCloudError.self) { try await adapter.createFolder(named: "Invalid", in: .root) }
+    #expect(await second.calls.isEmpty)
+}
+
+@Test
+func spaceFoldersDisambiguateDuplicateNamesWithoutMergingTheirContents() async throws {
+    let item = ProviderItem(id: "file", parentID: nil, filename: "file.txt", kind: .file, size: 1,
+                            path: "/file.txt", contentVersion: Data(), metadataVersion: Data(),
+                            availabilityIntent: .unspecified, capabilities: [.read])
+    let first = StubProviderBackend(items: [item])
+    let second = StubProviderBackend(items: [item])
+    let adapter = FileProviderAdapter(backend: SpaceFileProviderBackend(spaces: {
+        [ProviderSpace(id: "first", name: "Marketing", backend: { first }),
+         ProviderSpace(id: "second", name: "marketing", backend: { second })]
+    }))
+    let folders = try await adapter.enumerate(container: .root).items
+    #expect(folders.map(\.filename) == ["Marketing", "marketing (2)"])
+    let contents = try await adapter.enumerate(container: .item(id: folders[1].id, path: "/marketing (2)")).items
+    #expect(contents.first?.path == "/marketing (2)/file.txt")
+    #expect(contents.first?.parentID == folders[1].id)
+    #expect(await first.calls.isEmpty)
+    #expect(await second.calls == ["enumerate:nil:/"])
+}

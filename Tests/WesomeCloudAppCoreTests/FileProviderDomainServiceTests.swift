@@ -101,3 +101,50 @@ func domainServiceRemovesPersistedDomainsEvenWhenSystemManagerDoesNotListThem() 
 
     #expect(try await repository.domains(accountID: accountID).isEmpty)
 }
+
+private actor PreservingDomainManager: FileProviderDomainManaging {
+    let manager = MemoryFileProviderDomainManager()
+    var preserved: [String] = []
+
+    func register(_ domain: CloudDomain) async throws { try await manager.register(domain) }
+    func remove(domainID: String) async throws { try await manager.remove(domainID: domainID) }
+    func removePreservingUserData(domainID: String) async throws {
+        preserved.append(domainID)
+        try await manager.remove(domainID: domainID)
+    }
+    func domains() async throws -> [CloudDomain] { try await manager.domains() }
+}
+
+@Test
+func unifiedDomainRestoreRetiresLegacyLocationsWithoutDiscardingUserDataOrSelections() async throws {
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let personal = CloudDomain(id: account.id.uuidString, accountID: account.id, displayName: "Personal")
+    let project = CloudDomain(id: "project", accountID: account.id, displayName: "Marketing", storageID: UUID())
+    let manager = PreservingDomainManager()
+    try await manager.register(personal)
+    try await manager.register(project)
+    let repository = MemoryAccountRepository()
+    try await repository.saveDomain(personal)
+    try await repository.saveDomain(project)
+    let signaler = MemoryFileProviderChangeSignaler()
+    let unified = UnifiedFileProviderDomainManager(manager: manager, signaler: signaler)
+    let service = FileProviderDomainService(manager: unified, repository: repository)
+
+    try await service.restore([personal, project])
+    #expect(try await manager.domains().map(\.displayName) == ["WesomeCloud"])
+    #expect(Set(await manager.preserved) == [personal.id, project.id])
+    #expect(Set(try await repository.domains(accountID: account.id).map(\.metadataID)) == [personal.metadataID, project.metadataID])
+
+    try await service.removeDomain(project)
+    try await service.refreshSelections([personal])
+    #expect(try await manager.domains().map(\.displayName) == ["WesomeCloud"])
+    #expect(try await repository.domains(accountID: account.id) == [personal])
+    try await service.restore([personal])
+    #expect(await manager.preserved.count == 2)
+
+    try await service.removeDomain(personal)
+    try await service.refreshSelections([])
+    #expect(try await manager.domains().isEmpty)
+    #expect(await manager.preserved.count == 3)
+    #expect(await signaler.signaledEnumerators.map(\.containerItemIdentifier).contains("NSFileProviderRootContainerItemIdentifier"))
+}
