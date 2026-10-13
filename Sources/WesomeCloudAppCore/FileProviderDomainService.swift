@@ -48,7 +48,14 @@ public struct CloudDomain: Codable, Equatable, Sendable, Identifiable {
 public protocol FileProviderDomainManaging: Sendable {
     func register(_ domain: CloudDomain) async throws
     func remove(domainID: String) async throws
+    func removePreservingUserData(domainID: String) async throws
     func domains() async throws -> [CloudDomain]
+}
+
+public extension FileProviderDomainManaging {
+    func removePreservingUserData(domainID: String) async throws {
+        try await remove(domainID: domainID)
+    }
 }
 
 public protocol FileProviderChangeSignaling: Sendable {
@@ -154,7 +161,17 @@ public actor FileProviderDomainService {
         await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Removed Finder location \(domain.displayName)"))
     }
 
+    public func refreshSelections(_ selections: [CloudDomain]) async throws {
+        if let manager = manager as? any FileProviderSelectionRestoring {
+            try await manager.restoreSelections(selections)
+        }
+    }
+
     public func restore(_ selections: [CloudDomain]) async throws {
+        if let manager = manager as? any FileProviderSelectionRestoring {
+            try await manager.restoreSelections(selections)
+            return
+        }
         let registered = Set(try await manager.domains().map(\.id))
         for domain in selections {
             if !registered.contains(domain.id) {
@@ -243,6 +260,14 @@ public final class SystemFileProviderDomainManager: FileProviderDomainManaging, 
             displayName: domainID
         )
         try await NSFileProviderManager.remove(domain)
+    }
+
+    public func removePreservingUserData(domainID: String) async throws {
+        let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(domainID), displayName: domainID)
+        let preservedURL = try await NSFileProviderManager.remove(domain, mode: .preserveDownloadedUserData)
+        if let preservedURL {
+            await WesomeLogger(category: "FileProviderDomain").info("Preserved files from retired Finder location at \(preservedURL.path)")
+        }
     }
 
     public func domains() async throws -> [CloudDomain] {

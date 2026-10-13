@@ -190,6 +190,8 @@ public actor ProductionDomainRuntimeResolver {
     private let preferences: PreferencesRepository
     private let factory: ProductionExtensionRuntimeFactory
     private let credentialResolver: AccountCredentialResolver
+    private var accountCredentials: [UUID: (account: Account, credential: Credential, resolution: Task<ResolvedAccountCredentials, Error>)] = [:]
+    private var spaceCoordinators: [String: (configuration: ExtensionRuntimeAccountConfiguration, coordinator: FileProviderCoordinator)] = [:]
 
     public init(
         accounts: AccountRepository,
@@ -231,7 +233,87 @@ public actor ProductionDomainRuntimeResolver {
         return DomainRuntimeResolution(record: record, credential: credential)
     }
 
+    private func selectedSpaces() async throws -> [ProviderSpace] {
+        let records = try await accounts.records()
+        let accountIDs = Set(records.map(\.id))
+        accountCredentials = accountCredentials.filter { accountIDs.contains($0.key) }
+        let selectedIDs = Set(records.flatMap(\.domains).map(\.id))
+        spaceCoordinators = spaceCoordinators.filter { selectedIDs.contains($0.key) }
+        return records.flatMap { record in
+            record.domains.map { domain in
+                ProviderSpace(id: domain.id, name: domain.displayName, rootPath: domain.rootPath) {
+                    try await self.coordinator(for: record.selecting(domain))
+                }
+            }
+        }
+    }
+
+    // All spaces in an account share one token exchange, including concurrent requests.
+    private func resolvedCredentials(account: Account, credential: Credential) async throws -> ResolvedAccountCredentials {
+        let resolution: Task<ResolvedAccountCredentials, Error>
+        if let cached = accountCredentials[account.id], cached.account == account, cached.credential == credential {
+            resolution = cached.resolution
+        } else {
+            let resolver = credentialResolver
+            resolution = Task { try await resolver.resolve(account: account, credential: credential) }
+            accountCredentials[account.id] = (account, credential, resolution)
+        }
+        do {
+            let resolved = try await resolution.value
+            if let updated = resolved.updatedCredential {
+                try await credentials.save(updated)
+                accountCredentials[account.id] = (account, updated, resolution)
+            }
+            return resolved
+        } catch {
+            accountCredentials[account.id] = nil
+            throw error
+        }
+    }
+
+    private func coordinator(for record: PersistedAccountRecord) async throws -> FileProviderCoordinator {
+        guard let credential = try await credentials.credential(accountID: record.id) else {
+            throw WesomeCloudError.unsupported("Missing credential for account \(record.id.uuidString)")
+        }
+        let preferences = try await preferences.load()
+        var configuration = ExtensionRuntimeAccountConfiguration(
+            account: record.account, credential: credential, metadataID: record.metadataID,
+            remoteRootPath: record.domain?.rootPath ?? "/", webDAVRootURL: record.domain?.webDAVRootURL,
+            syncPreferences: preferences.sync, filePreferences: preferences.files
+        )
+        guard let key = record.domain?.id else { throw WesomeCloudError.missingItem(record.id.uuidString) }
+        if let cached = spaceCoordinators[key], cached.configuration == configuration {
+            return cached.coordinator
+        }
+        let resolved = try await resolvedCredentials(account: record.account, credential: credential)
+        if let updatedCredential = resolved.updatedCredential { configuration.credential = updatedCredential }
+        let coordinator = try factory.makeCoordinator(configuration: configuration, credentials: resolved.credentials)
+        spaceCoordinators[key] = (configuration, coordinator)
+        return coordinator
+    }
+
     public func makeRuntime(domainID: String) async throws -> FileProviderExtensionRuntime {
+        if domainID == ProviderSpaceIdentifier.domainID {
+            let backend = SpaceFileProviderBackend(spaces: { try await self.selectedSpaces() })
+            let cache = ExtensionItemCache()
+            try factory.paths.ensureDirectories()
+            let store = try SQLiteMetadataStore(databaseURL: factory.paths.database)
+            let records = try await accounts.records()
+            let folders = try await backend.enumerate(parentID: nil, remotePath: "/")
+            for folder in folders {
+                await cache.register(folder, parentPath: nil)
+                guard let identifier = ProviderSpaceIdentifier.parse(folder.id),
+                      let record = records.first(where: { $0.domains.contains { $0.id == identifier.spaceID } }),
+                      let domain = record.domains.first(where: { $0.id == identifier.spaceID }) else { continue }
+                let space = ProviderSpace(id: domain.id, name: folder.filename, rootPath: domain.rootPath) {
+                    try await self.coordinator(for: record.selecting(domain))
+                }
+                for stored in try store.storedItems(accountID: domain.metadataID) {
+                    await cache.register(space.presenting(ProviderItem(stored: stored)), parentPath: nil)
+                }
+            }
+            return FileProviderExtensionRuntime(adapter: FileProviderAdapter(backend: backend), itemCache: cache, allowsRootCreation: false)
+        }
         let resolution = try await resolve(domainID: domainID)
         let preferences = try await preferences.load()
         let resolved = try await credentialResolver.resolve(account: resolution.record.account, credential: resolution.credential)

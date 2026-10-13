@@ -153,19 +153,19 @@ func schedulerSignalsFileProviderEnumeratorWhenRemoteChangesArrive() async throw
     let scheduler = BackgroundSyncScheduler(
         runner: runner,
         appModel: appModel,
-        changeSignaler: changeSignaler,
+        changeSignaler: UnifiedFileProviderChangeSignaler(signaler: changeSignaler),
         clock: { now }
     )
 
     let result = try await scheduler.runDueWork(for: record)
 
     #expect(result.message == "3 remote changes, 0 queued operations")
-    #expect(await changeSignaler.signaledEnumerators.map(\.domainID) == ["domain-1", "domain-1", "domain-1", "domain-1"])
+    #expect(await changeSignaler.signaledEnumerators.map(\.domainID) == ["wesomecloud", "wesomecloud", "wesomecloud", "wesomecloud"])
     #expect(await changeSignaler.signaledEnumerators.map(\.containerItemIdentifier) == [
-        "NSFileProviderRootContainerItemIdentifier",
+        "space:ZG9tYWluLTE=",
         "NSFileProviderWorkingSetContainerItemIdentifier",
-        "folder",
-        "removed-parent",
+        "space:ZG9tYWluLTE=:folder",
+        "space:ZG9tYWluLTE=:removed-parent",
     ])
 }
 

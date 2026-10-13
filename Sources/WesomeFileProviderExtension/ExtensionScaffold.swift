@@ -6,10 +6,12 @@ import WesomeCloudShared
 public struct FileProviderExtensionRuntime: Sendable {
     public var adapter: FileProviderAdapter
     public var itemCache: ExtensionItemCache
+    public var allowsRootCreation: Bool
 
-    public init(adapter: FileProviderAdapter, itemCache: ExtensionItemCache = ExtensionItemCache()) {
+    public init(adapter: FileProviderAdapter, itemCache: ExtensionItemCache = ExtensionItemCache(), allowsRootCreation: Bool = true) {
         self.adapter = adapter
         self.itemCache = itemCache
+        self.allowsRootCreation = allowsRootCreation
     }
 }
 
@@ -148,7 +150,9 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 let runtime = try await runtimeBox.resolve()
                 if identifier == .rootContainer {
                     await logger.info("item completed id=\(itemID)")
-                    completion.call(WesomeFileProviderItem(item: ProviderItem.root), nil)
+                    var root = ProviderItem.root
+                    if !runtime.allowsRootCreation { root.capabilities = [.enumerate] }
+                    completion.call(WesomeFileProviderItem(item: root), nil)
                 } else {
                     let parentPath = await runtime.itemCache.parentPath(for: itemID)
                     let item = try await runtime.adapter.itemForIdentifier(itemID, parentPath: parentPath)
@@ -438,7 +442,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 if let newContents {
                     if hasLocationChange {
                         let parentID = item.parentItemIdentifier == .rootContainer ? nil : String(item.parentItemIdentifier.rawValue)
-                        let destination = await runtime.itemCache.destinationPath(parentID: parentID, filename: item.filename)
+                        let destination = try await Self.destinationPath(parentID: parentID, filename: item.filename, runtime: runtime)
                         _ = try await runtime.adapter.moveItem(itemID, to: destination)
                         if let parentID {
                             registrationParentPath = await runtime.itemCache.cachedItem(id: parentID)?.path ?? "/"
@@ -452,7 +456,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 } else {
                     if hasLocationChange {
                         let parentID = item.parentItemIdentifier == .rootContainer ? nil : String(item.parentItemIdentifier.rawValue)
-                        let destination = await runtime.itemCache.destinationPath(parentID: parentID, filename: item.filename)
+                        let destination = try await Self.destinationPath(parentID: parentID, filename: item.filename, runtime: runtime)
                         providerItem = try await runtime.adapter.moveItem(itemID, to: destination)
                         if let parentID {
                             registrationParentPath = await runtime.itemCache.cachedItem(id: parentID)?.path ?? "/"
@@ -575,6 +579,17 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
             domain: NSFileProviderErrorDomain,
             code: Self.directoryNotEmptyErrorCode
         )
+    }
+
+    private static func destinationPath(parentID: String?, filename: String, runtime: FileProviderExtensionRuntime) async throws -> String {
+        if let parentID {
+            if let parent = try await runtime.adapter.itemForIdentifier(parentID, parentPath: "/") {
+                await runtime.itemCache.register(parent, parentPath: nil)
+            } else if await runtime.itemCache.cachedItem(id: parentID) == nil {
+                throw WesomeCloudError.missingItem(parentID)
+            }
+        }
+        return await runtime.itemCache.destinationPath(parentID: parentID, filename: filename)
     }
 
     private static func validateDeleteBaseVersionIfNeeded(

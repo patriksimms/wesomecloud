@@ -64,6 +64,7 @@ private actor RuntimeBlockingTransport: HTTPTransport {
 
 private actor RuntimeRefreshExchanger: OAuthRefreshTokenExchanging {
     var requestedRefreshToken: String?
+    var requestedRefreshTokens: [String] = []
     var tokenSet: OAuthTokenSet
 
     init(tokenSet: OAuthTokenSet) {
@@ -72,6 +73,7 @@ private actor RuntimeRefreshExchanger: OAuthRefreshTokenExchanging {
 
     func refreshAccessToken(_ refreshToken: String, serverURL _: URL, configuration _: OAuthAuthorizationConfiguration) async throws -> OAuthTokenSet {
         requestedRefreshToken = refreshToken
+        requestedRefreshTokens.append(refreshToken)
         return tokenSet
     }
 }
@@ -1165,7 +1167,7 @@ private struct SpaceRuntimeTransport: HTTPTransport {
 }
 
 @Test
-func domainRuntimesKeepSpaceListingsAndDownloadedFilesSeparateAfterRestart() async throws {
+func unifiedRuntimeKeepsSpaceListingsAndDownloadsSeparateAcrossRestartAndSelectionChanges() async throws {
     let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = WesomeCloudPaths(root: root)
@@ -1175,28 +1177,51 @@ func domainRuntimesKeepSpaceListingsAndDownloadedFilesSeparateAfterRestart() asy
         CloudDomain(id: name, accountID: account.id, displayName: name,
                     webDAVRootURL: URL(string: "https://cloud.example/dav/spaces/\(name)")!, storageID: UUID())
     }
+    let originalDomains = record.domains
     let credentials = MemoryCredentialStore()
-    try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "secret", kind: .appPassword))
     let accounts = MemoryAccountRepository(records: [record])
     let factory = ProductionExtensionRuntimeFactory(paths: paths, transport: SpaceRuntimeTransport())
     let resolver = ProductionDomainRuntimeResolver(accounts: accounts, credentials: credentials, factory: factory)
-    let am = try await resolver.makeRuntime(domainID: "AM")
-    let hr = try await resolver.makeRuntime(domainID: "HR")
-    #expect(try await am.adapter.enumerate(container: .root).items.map(\.filename) == ["AM.txt"])
-    #expect(try await hr.adapter.enumerate(container: .root).items.map(\.filename) == ["HR.txt"])
-    let amURL = try await am.adapter.fetchContents(for: "same-id")
-    let hrURL = try await hr.adapter.fetchContents(for: "same-id")
+    let runtime = try await resolver.makeRuntime(domainID: ProviderSpaceIdentifier.domainID)
+    let folders = try await runtime.adapter.enumerate(container: .root).items
+    #expect(folders.map(\.filename) == ["AM", "HR"])
+    try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "secret", kind: .appPassword))
+    let amFolder = folders[0]
+    let hrFolder = folders[1]
+    let am = try #require(try await runtime.adapter.enumerate(container: .item(id: amFolder.id, path: "/AM")).items.first)
+    let hr = try #require(try await runtime.adapter.enumerate(container: .item(id: hrFolder.id, path: "/HR")).items.first)
+    #expect(am.filename == "AM.txt")
+    #expect(hr.filename == "HR.txt")
+    #expect(am.id != hr.id)
+    #expect(am.parentID == amFolder.id)
+    #expect(hr.parentID == hrFolder.id)
+    #expect(am.path == "/AM/AM.txt")
+    let amURL = try await runtime.adapter.fetchContents(for: am.id)
+    let hrURL = try await runtime.adapter.fetchContents(for: hr.id)
     #expect(amURL != hrURL)
     #expect(try Data(contentsOf: amURL) == Data("AM".utf8))
     #expect(try Data(contentsOf: hrURL) == Data("HR".utf8))
 
     let restarted = ProductionDomainRuntimeResolver(accounts: accounts, credentials: credentials, factory: factory)
-    let restoredAM = try await restarted.makeRuntime(domainID: "AM")
-    let restoredHR = try await restarted.makeRuntime(domainID: "HR")
-    #expect(await restoredAM.itemCache.cachedItem(id: "same-id")?.path == "/AM.txt")
-    #expect(await restoredHR.itemCache.cachedItem(id: "same-id")?.path == "/HR.txt")
-    #expect(try await restoredAM.adapter.itemForIdentifier("same-id", parentPath: "/")?.filename == "AM.txt")
-    #expect(try await restoredHR.adapter.itemForIdentifier("same-id", parentPath: "/")?.filename == "HR.txt")
+    let restored = try await restarted.makeRuntime(domainID: ProviderSpaceIdentifier.domainID)
+    #expect(await restored.itemCache.cachedItem(id: am.id)?.path == "/AM/AM.txt")
+    #expect(await restored.itemCache.cachedItem(id: hr.id)?.path == "/HR/HR.txt")
+    #expect(try await restored.adapter.itemForIdentifier(am.id, parentPath: "/AM")?.filename == "AM.txt")
+    #expect(try await restored.adapter.itemForIdentifier(hr.id, parentPath: "/HR")?.filename == "HR.txt")
+
+    _ = try await restored.adapter.enumerate(container: .workingSet)
+    record.domains.removeLast()
+    record.domains[0].displayName = "Marketing"
+    try await accounts.save(record)
+    let changes = try await restored.adapter.changes(in: .root)
+    #expect(changes.updated.map(\.filename) == ["Marketing"])
+    #expect(changes.deleted == [hrFolder.id])
+    let workingSetChanges = try await restored.adapter.changes(in: .workingSet)
+    #expect(Set(workingSetChanges.deleted) == [hrFolder.id, hr.id])
+    #expect(try await restored.adapter.itemForIdentifier(am.id, parentPath: "/")?.path == "/Marketing/AM.txt")
+    record.domains = originalDomains
+    try await accounts.save(record)
+    #expect(try await restored.adapter.changes(in: .root).added.map(\.id) == [hrFolder.id])
 }
 
 @Test
@@ -1226,6 +1251,34 @@ func domainRuntimeResolverRefreshesOAuthCredentialBeforeBuildingRuntime() async 
 
     #expect(await exchanger.requestedRefreshToken == "old-refresh")
     #expect(await transport.requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer new-access")
+    #expect(try await credentials.credential(accountID: account.id)?.secret == "new-refresh")
+}
+
+@Test
+func unifiedRuntimeSharesOAuthRefreshAcrossSpaces() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    var record = PersistedAccountRecord(account: account)
+    record.domains = ["AM", "HR"].map { name in
+        CloudDomain(id: name, accountID: account.id, displayName: name,
+                    webDAVRootURL: URL(string: "https://cloud.example/dav/spaces/\(name)")!, storageID: UUID())
+    }
+    let credentials = MemoryCredentialStore()
+    try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "old-refresh", kind: .oauthRefreshToken))
+    let exchanger = RuntimeRefreshExchanger(tokenSet: OAuthTokenSet(username: "alice", accessToken: "new-access", refreshToken: "new-refresh"))
+    let resolver = ProductionDomainRuntimeResolver(
+        accounts: MemoryAccountRepository(records: [record]), credentials: credentials,
+        factory: ProductionExtensionRuntimeFactory(paths: WesomeCloudPaths(root: root), transport: SpaceRuntimeTransport()),
+        credentialResolver: AccountCredentialResolver(discoveryClient: nil, refreshExchanger: exchanger)
+    )
+    let runtime = try await resolver.makeRuntime(domainID: ProviderSpaceIdentifier.domainID)
+    let folders = try await runtime.adapter.enumerate(container: .root).items
+    #expect(await exchanger.requestedRefreshTokens.isEmpty)
+    for folder in folders + folders {
+        #expect(try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!)).items.count == 1)
+    }
+    #expect(await exchanger.requestedRefreshTokens == ["old-refresh"])
     #expect(try await credentials.credential(accountID: account.id)?.secret == "new-refresh")
 }
 
