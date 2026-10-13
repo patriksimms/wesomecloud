@@ -4,16 +4,16 @@ IMPORTANT: This file was signed by Sparkle. Any modifications to this file requi
     <channel>
         <title>WesomeCloud</title>
         <item>
-            <title>0.2.0</title>
-            <pubDate>Tue, 06 Oct 2026 15:27:43 +0200</pubDate>
-            <sparkle:version>6</sparkle:version>
-            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <title>0.3.0</title>
+            <pubDate>Tue, 13 Oct 2026 17:54:36 +0200</pubDate>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/patriksimms/wesomecloud/releases/download/v0.2.0/WesomeCloud-0.2.0.zip" length="3180491" type="application/octet-stream" sparkle:edSignature="mBLhfbmN1gtILz/83PHE8wfMPlkSlYHmcpOdM0zForQ3d2YWbxemBlas+Gy9ASicE/vZMZaFAlce41bdBPdhCA=="></enclosure>
+            <enclosure url="https://github.com/patriksimms/wesomecloud/releases/download/v0.3.0/WesomeCloud-0.3.0.zip" length="3590782" type="application/octet-stream" sparkle:edSignature="RQU4H7h2bhwivQD03aO92FHbyMua8dOv0V5aJfpsLNthzBRh/yPJVJIGZPsKlMbJqP281/em2vi/LDjI9vsLCg=="></enclosure>
         </item>
     </channel>
 </rss><!-- sparkle-signatures:
-edSignature: rRKxvJBQsnJI0mKKp39ETkS/jIirDT07hataQxc1VkPey8wpy43s+s/r3ipEmc+htVqZKTcia5KPEw0pn7dtAA==
+edSignature: 9UxyB2XD0PGbkSlBIooMtN/tJE7wio+6kulhNVc6elCx7Wi/m//aQBpiGLWuHJpBlWFAXizVh21LRnVU/k8CCw==
 length: 1132
 -->
