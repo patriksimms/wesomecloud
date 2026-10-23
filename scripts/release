@@ -17,7 +17,8 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-PLISTS = ("AppHost/Info.plist", "AppHost/WesomeFileProviderExtension-Info.plist")
+PLISTS = ("AppHost/Info.plist", "AppHost/WesomeFileProviderExtension-Info.plist",
+          "AppHost/WesomeFileProviderUIExtension-Info.plist")
 
 
 def run(*args, capture=False, input=None, env=None):

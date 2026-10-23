@@ -71,6 +71,8 @@ private actor RuntimeRefreshExchanger: OAuthRefreshTokenExchanging {
         self.tokenSet = tokenSet
     }
 
+    func set(tokenSet: OAuthTokenSet) { self.tokenSet = tokenSet }
+
     func refreshAccessToken(_ refreshToken: String, serverURL _: URL, configuration _: OAuthAuthorizationConfiguration) async throws -> OAuthTokenSet {
         requestedRefreshToken = refreshToken
         requestedRefreshTokens.append(refreshToken)
@@ -954,7 +956,7 @@ private struct DeniedCredentialStore: CredentialStore {
 }
 
 @Test
-func fileProviderKeychainDenialReportsNotAuthenticatedInsteadOfUnsupportedDomain() async throws {
+func fileProviderKeychainDenialReportsAccessFailureInsteadOfRequestingLogin() async throws {
     let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
     let record = PersistedAccountRecord(account: account, domain: CloudDomain(id: "domain-1", accountID: account.id, displayName: "Alice"))
     let resolver = ProductionDomainRuntimeResolver(
@@ -967,7 +969,7 @@ func fileProviderKeychainDenialReportsNotAuthenticatedInsteadOfUnsupportedDomain
         runtimeResolver: { domainID in try await resolver.makeRuntime(domainID: domainID) }
     )
 
-    await expectFileProviderError(.notAuthenticated) {
+    await expectFileProviderError(.cannotSynchronize) {
         _ = try await fetchContents(for: "root-file", from: extensionInstance)
     }
 }
@@ -2479,3 +2481,89 @@ private final class ChangeObserver: NSObject, NSFileProviderChangeObserver, @unc
     }
 }
 #endif
+
+private final class RuntimeClock: @unchecked Sendable {
+    var now = Date(timeIntervalSince1970: 1_000)
+}
+
+private actor RecoveringRuntimeTransport: HTTPTransport {
+    var status = 207
+    var authorizationHeaders: [String] = []
+
+    func set(status: Int) { self.status = status }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        authorizationHeaders.append(request.value(forHTTPHeaderField: "Authorization") ?? "")
+        let (data, _) = try await SpaceRuntimeTransport().data(for: request)
+        return (data, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+@Test
+func unifiedRuntimeRefreshesExpiredAccessTokenForExistingSpaceCoordinator() async throws {
+    let paths = WesomeCloudPaths(root: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let domain = CloudDomain(id: "AM", accountID: account.id, displayName: "AM", webDAVRootURL: URL(string: "https://cloud.example/dav/spaces/AM")!)
+    let record = PersistedAccountRecord(account: account, domain: domain)
+    let credentials = MemoryCredentialStore()
+    try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "refresh-1", kind: .oauthRefreshToken))
+    let clock = RuntimeClock()
+    let exchanger = RuntimeRefreshExchanger(tokenSet: OAuthTokenSet(username: "alice", accessToken: "access-1", refreshToken: "refresh-2", expiresAt: clock.now.addingTimeInterval(3600)))
+    let transport = RecoveringRuntimeTransport()
+    let resolver = ProductionDomainRuntimeResolver(
+        accounts: MemoryAccountRepository(records: [record]), credentials: credentials,
+        factory: ProductionExtensionRuntimeFactory(paths: paths, transport: transport),
+        credentialResolver: AccountCredentialResolver(discoveryClient: nil, refreshExchanger: exchanger),
+        clock: { clock.now }
+    )
+    let runtime = try await resolver.makeRuntime(domainID: ProviderSpaceIdentifier.domainID)
+    let folder = try #require(try await runtime.adapter.enumerate(container: .root).items.first)
+    _ = try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!))
+    clock.now = clock.now.addingTimeInterval(3600)
+    await exchanger.set(tokenSet: OAuthTokenSet(username: "alice", accessToken: "access-2", refreshToken: "refresh-3", expiresAt: clock.now.addingTimeInterval(3600)))
+    _ = try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!))
+
+    #expect(await transport.authorizationHeaders == ["Bearer access-1", "Bearer access-2"])
+    #expect(await exchanger.requestedRefreshTokens == ["refresh-1", "refresh-2"])
+}
+
+@Test
+func finderAuthenticationHealthRemainsVisibleUntilExtensionActuallyRecovers() async throws {
+    let paths = WesomeCloudPaths(root: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let health = FileProviderHealthStore(paths: paths)
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let domain = CloudDomain(id: "AM", accountID: account.id, displayName: "AM", webDAVRootURL: URL(string: "https://cloud.example/dav/spaces/AM")!)
+    let record = PersistedAccountRecord(account: account, domain: domain, lastSyncStatus: SyncStatusSnapshot(state: .idle, message: "Up to date"))
+    let accounts = MemoryAccountRepository(records: [record])
+    let credentials = MemoryCredentialStore()
+    try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "secret", kind: .appPassword))
+    let transport = RecoveringRuntimeTransport()
+    await transport.set(status: 401)
+    let resolver = ProductionDomainRuntimeResolver(accounts: accounts, credentials: credentials, factory: ProductionExtensionRuntimeFactory(paths: paths, transport: transport))
+    let runtime = try await resolver.makeRuntime(domainID: ProviderSpaceIdentifier.domainID)
+    let folder = try #require(try await runtime.adapter.enumerate(container: .root).items.first)
+    do {
+        _ = try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!))
+        Issue.record("Expected rejected credentials")
+    } catch WesomeCloudError.httpFailure(let failure) {
+        #expect(failure.kind == .authentication)
+    }
+    // A separate instance reads the file as the app does across the process boundary.
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(credentialStore: credentials),
+        domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+        repository: accounts, fileProviderHealth: FileProviderHealthStore(paths: paths)
+    )
+    #expect(try await model.loadSnapshot().accounts.first?.lastSyncStatus.state == .error)
+    try await model.updateSyncStatus(SyncStatusSnapshot(state: .idle, message: "Up to date"), accountID: account.id)
+    #expect(try await model.loadSnapshot().accounts.first?.lastSyncStatus.state == .error)
+    #expect(try await model.finderSignInAccountIDs() == [account.id])
+
+    await transport.set(status: 207)
+    _ = try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!))
+    #expect(try await health.issue(accountID: account.id) == nil)
+    #expect(try await model.loadSnapshot().accounts.first?.lastSyncStatus.state == .idle)
+    #expect(try await model.finderSignInAccountIDs().isEmpty)
+}

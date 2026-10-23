@@ -271,6 +271,7 @@ public actor WesomeCloudAppModel {
     private let conflictResolver: AppConflictResolving?
     private let availabilityResolver: AppAvailabilityResolving?
     private let publicLinkCreator: AppPublicLinkCreating?
+    private let fileProviderHealth: FileProviderHealthStore?
     private var updateStatus: UpdateStatus?
     private var lastCreatedShare: PublicLinkShare?
     private var publicLinks: [AppPublicLink] = []
@@ -287,6 +288,7 @@ public actor WesomeCloudAppModel {
         conflictResolver: AppConflictResolving? = nil,
         availabilityResolver: AppAvailabilityResolving? = nil,
         publicLinkCreator: AppPublicLinkCreating? = nil,
+        fileProviderHealth: FileProviderHealthStore? = nil,
         diagnostics: AppDiagnosticBuffer = AppDiagnosticBuffer()
     ) {
         self.accountSessions = accountSessions
@@ -300,6 +302,7 @@ public actor WesomeCloudAppModel {
         self.conflictResolver = conflictResolver
         self.availabilityResolver = availabilityResolver
         self.publicLinkCreator = publicLinkCreator
+        self.fileProviderHealth = fileProviderHealth
         self.diagnostics = diagnostics
     }
 
@@ -338,7 +341,12 @@ public actor WesomeCloudAppModel {
     public func loadSnapshot() async throws -> AppSnapshot {
         try await importCrashReportsIfAvailable()
         let spaces = await loadSpaces(for: try await repository.records())
-        let accounts = try await repository.records()
+        var accounts = try await repository.records()
+        for index in accounts.indices where !accounts[index].domains.isEmpty {
+            if let issue = try await fileProviderHealth?.issue(accountID: accounts[index].id) {
+                accounts[index].lastSyncStatus = SyncStatusSnapshot(state: .error, message: issue.message, updatedAt: issue.occurredAt)
+            }
+        }
         return try await AppSnapshot(
             accounts: accounts,
             spaces: spaces,
@@ -422,14 +430,35 @@ public actor WesomeCloudAppModel {
         return try await persist(session: session, readyMessageName: session.account.username)
     }
 
-    public func reconnectAccount(accountID: UUID, appPassword: String) async throws -> PersistedAccountRecord {
+    public func reconnectAccount(accountID: UUID, appPassword: String, authenticator: OAuthAuthenticating? = nil) async throws -> PersistedAccountRecord {
         guard let existing = try await repository.records().first(where: { $0.id == accountID }) else {
             throw WesomeCloudError.missingItem(accountID.uuidString)
         }
-        let session = try await accountSessions.reconnectAccount(existing.account, appPassword: appPassword)
+        let session: AccountSession
+        if let authenticator {
+            session = try await accountSessions.reconnectOAuthAccount(existing.account, authenticator: authenticator)
+        } else {
+            session = try await accountSessions.reconnectAccount(existing.account, appPassword: appPassword)
+        }
         // Preserve all selected Spaces when reconnecting. Legacy imports without a
         // domain get the default account location.
-        return try await persist(session: session, selectedDomains: existing.domains.isEmpty && !existing.syncLocations.isEmpty ? nil : existing.domains, readyMessageName: session.account.username)
+        let record = try await persist(session: session, selectedDomains: existing.domains.isEmpty && !existing.syncLocations.isEmpty ? nil : existing.domains, readyMessageName: session.account.username)
+        try await domains.authenticationSucceeded(for: record.domains)
+        return record
+    }
+
+    public func credentialKind(accountID: UUID) async throws -> CredentialKind? {
+        try await accountSessions.credentialKind(accountID: accountID)
+    }
+
+    public func finderSignInAccountIDs() async throws -> [UUID] {
+        var ids: [UUID] = []
+        for record in try await repository.records() where !record.domains.isEmpty {
+            if try await fileProviderHealth?.issue(accountID: record.id)?.reason == .authentication {
+                ids.append(record.id)
+            }
+        }
+        return ids
     }
 
     public func syncSpace(_ space: AppSpace) async throws -> PersistedAccountRecord {

@@ -165,7 +165,7 @@ private actor MacManualSyncRunner: ManualSyncRunning {
     var accountIDs: [UUID] = []
     var error: Error?
 
-    func set(error: Error) {
+    func set(error: Error?) {
         self.error = error
     }
 
@@ -1731,4 +1731,25 @@ func dashboardFileActionsUseTheFilesSpace() async throws {
     #expect(viewModel.lastErrorMessage == nil)
     let url = try #require(await transport.requests.first?.url)
     #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "space_ref" }?.value == "storage$HR!file")
+}
+
+@Test @MainActor
+func finderRecoveryOnlyOffersLoginWhenExistingCredentialsAreRejected() async throws {
+    let paths = WesomeCloudPaths(root: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let health = FileProviderHealthStore(paths: paths)
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let record = PersistedAccountRecord(account: account, domain: CloudDomain(id: "AM", accountID: account.id, displayName: "AM"))
+    try await health.report(.authentication, accountID: account.id)
+    let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()), domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()), repository: MemoryAccountRepository(records: [record]), fileProviderHealth: health)
+    let runner = MacManualSyncRunner()
+    let viewModel = WesomeCloudViewModel(model: model, manualSync: runner)
+
+    // The extension's retry can finish later than the app's authenticated poll.
+    #expect(await viewModel.recoverFinder() == nil)
+    #expect(await runner.accountIDs == [account.id])
+    await runner.set(error: KeychainError.status(-67701))
+    #expect(await viewModel.recoverFinder() == nil)
+    await runner.set(error: WesomeCloudError.httpFailure(HTTPFailure(statusCode: 401, kind: .authentication)))
+    #expect(await viewModel.recoverFinder()?.id == account.id)
 }

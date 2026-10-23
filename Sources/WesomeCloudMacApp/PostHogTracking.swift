@@ -205,6 +205,7 @@ public enum TrackingEvent: String, Sendable {
     case addAccount = "account_connection_requested"
     case addOAuthAccount = "oauth_connection_requested"
     case reconnectAccount = "account_reconnection_requested"
+    case finderRecovery = "finder_recovery_requested"
     case syncSpace = "space_sync_requested"
     case removeSpace = "space_removal_requested"
     case dismissNotification = "notification_dismissed"

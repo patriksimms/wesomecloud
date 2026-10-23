@@ -8,9 +8,12 @@ public struct WesomeCloudRootView: View {
     @Bindable private var viewModel: WesomeCloudViewModel
     private let oauthAuthenticator: (URL) -> OAuthAuthenticating
     private let settingsRequestCount: Int
+    private let finderRecoveryRequestCount: Int
+    @Environment(\.scenePhase) private var scenePhase
     @State private var setupForm = AccountSetupFormModel()
     @State private var preferencesForm = PreferencesFormModel()
     @State private var reconnectPassword = ""
+    @State private var reconnectUsesOAuth = false
     @State private var reconnectingAccount: PersistedAccountRecord?
     @State private var spacePendingRemoval: AppSpace?
     @State private var accountPendingRemoval: PersistedAccountRecord?
@@ -22,12 +25,14 @@ public struct WesomeCloudRootView: View {
     public init(
         viewModel: WesomeCloudViewModel,
         settingsRequestCount: Int = 0,
+        finderRecoveryRequestCount: Int = 0,
         oauthAuthenticator: @escaping (URL) -> OAuthAuthenticating = { _ in
             ProductionOAuthAuthenticatorFactory().makeAuthenticator()
         }
     ) {
         self.viewModel = viewModel
         self.settingsRequestCount = settingsRequestCount
+        self.finderRecoveryRequestCount = finderRecoveryRequestCount
         self.oauthAuthenticator = oauthAuthenticator
     }
 
@@ -92,8 +97,7 @@ public struct WesomeCloudRootView: View {
                 diagnosticsExportURL: dashboard.lastDiagnosticsExportURL,
                 lastCreatedShare: dashboard.lastCreatedShare,
                 reconnectAccount: { account in
-                    reconnectPassword = ""
-                    reconnectingAccount = account
+                    beginReconnect(account)
                 },
                 openServerInBrowser: { account in
                     viewModel.openServerInBrowser(account)
@@ -140,10 +144,16 @@ public struct WesomeCloudRootView: View {
                 }
             )
         }
-        .task {
+        .task(id: finderRecoveryRequestCount) {
             await viewModel.initializeTracking()
             showingTrackingConsent = viewModel.trackingPreferencesLoaded && viewModel.tracking.consent == .notAsked
             await viewModel.refresh()
+            if finderRecoveryRequestCount > 0, let account = await viewModel.recoverFinder() {
+                beginReconnect(account)
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, !viewModel.isLoading { Task { await viewModel.refresh() } }
         }
         .onChange(of: viewModel.accounts.map(\.id)) { _, accountIDs in
             if let selectedAccountID, !accountIDs.contains(selectedAccountID) {
@@ -204,8 +214,8 @@ public struct WesomeCloudRootView: View {
             .frame(width: 520)
         }
         .sheet(item: $reconnectingAccount) { account in
-            ReconnectAccountView(account: account, appPassword: $reconnectPassword) {
-                await viewModel.reconnectAccount(account.id, appPassword: reconnectPassword)
+            ReconnectAccountView(account: account, appPassword: $reconnectPassword, usesOAuth: reconnectUsesOAuth) {
+                await viewModel.reconnectAccount(account.id, appPassword: reconnectPassword, authenticator: reconnectUsesOAuth ? oauthAuthenticator(account.account.serverURL) : nil)
                 if viewModel.lastErrorMessage == nil {
                     reconnectPassword = ""
                     reconnectingAccount = nil
@@ -246,6 +256,15 @@ public struct WesomeCloudRootView: View {
             Button("Cancel", role: .cancel) {}
         } message: { account in
             Text("This removes \(account.account.displayName) from WesomeCloud, unregisters its File Provider domains, deletes saved credentials, and removes local materialized files and transfer partials for this account.")
+        }
+    }
+
+    private func beginReconnect(_ account: PersistedAccountRecord) {
+        Task {
+            guard let usesOAuth = await viewModel.usesOAuth(accountID: account.id) else { return }
+            reconnectUsesOAuth = usesOAuth
+            reconnectPassword = ""
+            reconnectingAccount = account
         }
     }
 }
@@ -1173,11 +1192,13 @@ public struct NotificationRow: View {
 public struct ReconnectAccountView: View {
     public var account: PersistedAccountRecord
     @Binding public var appPassword: String
+    public var usesOAuth: Bool
     public var submit: () async -> Void
 
-    public init(account: PersistedAccountRecord, appPassword: Binding<String>, submit: @escaping () async -> Void) {
+    public init(account: PersistedAccountRecord, appPassword: Binding<String>, usesOAuth: Bool = false, submit: @escaping () async -> Void) {
         self.account = account
         self._appPassword = appPassword
+        self.usesOAuth = usesOAuth
         self.submit = submit
     }
 
@@ -1196,17 +1217,19 @@ public struct ReconnectAccountView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            SecureField("App password", text: $appPassword)
-                .textFieldStyle(.roundedBorder)
+            if !usesOAuth {
+                SecureField("App password", text: $appPassword)
+                    .textFieldStyle(.roundedBorder)
+            }
             HStack {
                 Spacer()
                 Button {
                     Task { await submit() }
                 } label: {
-                    Label("Reconnect", systemImage: "key")
+                    Label(usesOAuth ? "Sign in with browser" : "Reconnect", systemImage: "key")
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(appPassword.isEmpty)
+                .disabled(!usesOAuth && appPassword.isEmpty)
             }
         }
         .padding(24)

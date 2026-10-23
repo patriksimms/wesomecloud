@@ -361,13 +361,54 @@ public final class WesomeCloudViewModel {
         }
     }
 
-    public func reconnectAccount(_ accountID: UUID, appPassword: String) async {
+    public func usesOAuth(accountID: UUID) async -> Bool? {
+        do {
+            return try await model.credentialKind(accountID: accountID) == .oauthRefreshToken
+        } catch {
+            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return nil
+        }
+    }
+
+    public func recoverFinder() async -> PersistedAccountRecord? {
+        tracking.capture(.finderRecovery)
+        do {
+            let snapshot = try await model.loadSnapshot()
+            try await manualSync?.syncNow(accounts: snapshot.accounts)
+            await refresh()
+            // Finder may still be retrying. A stale extension error must not
+            // trigger a second login after the app just authenticated successfully.
+            return nil
+        } catch {
+            await refresh()
+            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            let needsLogin: Bool
+            switch error {
+            case WesomeCloudError.httpFailure(let failure):
+                needsLogin = failure.kind == .authentication
+            case WesomeCloudError.unsupported(let message):
+                needsLogin = message.hasPrefix("Missing credential for account")
+            default:
+                needsLogin = false
+            }
+            guard needsLogin else { return nil }
+            do {
+                let ids = try await model.finderSignInAccountIDs()
+                return accounts.first { ids.contains($0.id) }
+            } catch {
+                lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+                return nil
+            }
+        }
+    }
+
+    public func reconnectAccount(_ accountID: UUID, appPassword: String, authenticator: OAuthAuthenticating? = nil) async {
         let trackingSession = tracking.sessionID
         tracking.capture(.reconnectAccount)
         isLoading = true
         defer { isLoading = false }
         do {
-            _ = try await model.reconnectAccount(accountID: accountID, appPassword: appPassword)
+            _ = try await model.reconnectAccount(accountID: accountID, appPassword: appPassword, authenticator: authenticator)
             let snapshot = try await model.loadSnapshot()
             accounts = snapshot.accounts
             spaces = snapshot.spaces

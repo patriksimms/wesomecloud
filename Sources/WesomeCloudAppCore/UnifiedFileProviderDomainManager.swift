@@ -68,6 +68,10 @@ public struct UnifiedFileProviderChangeSignaler: FileProviderChangeSignaling {
         self.signaler = signaler
     }
 
+    public func signalAuthenticationResolved(domainID: String) async throws {
+        try await signaler.signalAuthenticationResolved(domainID: ProviderSpaceIdentifier.domainID)
+    }
+
     public func signalEnumerator(domainID: String, containerItemIdentifier: String) async throws {
         let identifier: String
         switch containerItemIdentifier {
