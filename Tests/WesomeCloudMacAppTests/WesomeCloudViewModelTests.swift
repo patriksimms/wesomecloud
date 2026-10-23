@@ -310,12 +310,13 @@ func viewModelRefreshesAndAddsAccountsThroughAppModel() async throws {
     await viewModel.refresh()
     #expect(viewModel.accounts.isEmpty)
 
-    await viewModel.addAccount(
+    let succeeded = await viewModel.addAccount(
         serverURL: URL(string: "https://cloud.example/")!,
         username: "alice",
         appPassword: "secret"
     )
 
+    #expect(succeeded)
     #expect(viewModel.accounts.count == 1)
     #expect(viewModel.accounts[0].serverVersion == "10.15.0")
     #expect(viewModel.lastErrorMessage == nil)
@@ -395,11 +396,12 @@ func viewModelAddsOAuthAccountThroughAppModel() async throws {
     )
     let viewModel = WesomeCloudViewModel(model: appModel)
 
-    await viewModel.addOAuthAccount(
+    let succeeded = await viewModel.addOAuthAccount(
         serverURL: URL(string: "https://cloud.example/")!,
         authenticator: MacAppOAuthAuthenticator()
     )
 
+    #expect(succeeded)
     #expect(viewModel.accounts.count == 1)
     #expect(viewModel.accounts.first?.account.username == "oauth-user")
     #expect(viewModel.accounts.first?.serverVersion == "10.15.0")
@@ -1813,4 +1815,63 @@ func finderSetupTracksSelectionActivationFailureAndRecovery() async throws {
     #expect(viewModel.spaces.first?.isSelected == false)
     await viewModel.openFinderLocation()
     #expect(opener.openedURLs == [location])
+}
+
+private actor SuspendedCapabilitiesFetcher: CapabilitiesFetching {
+    private var requested = false
+    private var requestWaiter: CheckedContinuation<Void, Never>?
+    private var responseWaiter: CheckedContinuation<Void, Never>?
+
+    func fetchCapabilities(serverURL: URL, credentials: Credentials) async throws -> ServerCapabilities {
+        requested = true
+        requestWaiter?.resume()
+        requestWaiter = nil
+        await withCheckedContinuation { responseWaiter = $0 }
+        throw URLError(.cannotConnectToHost)
+    }
+
+    func waitForRequest() async {
+        if requested { return }
+        await withCheckedContinuation { requestWaiter = $0 }
+    }
+
+    func failRequest() {
+        responseWaiter?.resume()
+        responseWaiter = nil
+    }
+}
+
+@MainActor
+@Test(arguments: AccountSetupMode.allCases)
+func repeatedSignInDoesNotDismissPendingAttempt(mode: AccountSetupMode) async {
+    let capabilities = SuspendedCapabilitiesFetcher()
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(
+            credentialStore: MemoryCredentialStore(),
+            capabilitiesFetcher: capabilities
+        ),
+        domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+        repository: MemoryAccountRepository()
+    )
+    let viewModel = WesomeCloudViewModel(model: model)
+    let submit = { @MainActor in
+        switch mode {
+        case .appPassword:
+            await viewModel.addAccount(serverURL: URL(string: "https://cloud.example/")!, username: "alice", appPassword: "secret")
+        case .oauth:
+            await viewModel.addOAuthAccount(serverURL: URL(string: "https://cloud.example/")!, authenticator: MacAppOAuthAuthenticator())
+        }
+    }
+
+    let firstAttempt = Task { await submit() }
+    await capabilities.waitForRequest()
+    let shouldDismiss = await submit()
+    #expect(!shouldDismiss, "A skipped sign-in must not dismiss the pending attempt")
+    #expect(viewModel.isLoading)
+    #expect(viewModel.accounts.isEmpty)
+
+    await capabilities.failRequest()
+    #expect(await firstAttempt.value == false)
+    #expect(viewModel.lastErrorMessage != nil)
+    #expect(!viewModel.isLoading)
 }

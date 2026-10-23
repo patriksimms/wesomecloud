@@ -196,21 +196,22 @@ public struct WesomeCloudRootView: View {
         }
         .sheet(isPresented: $showingSetup) {
             AccountSetupView(form: setupForm, isSubmitting: viewModel.isLoading, errorMessage: setupErrorMessage) { input in
+                let succeeded: Bool
                 switch input.mode {
                 case .appPassword:
-                    await viewModel.addAccount(
+                    succeeded = await viewModel.addAccount(
                         serverURL: input.serverURL,
                         username: input.username,
                         appPassword: input.appPassword
                     )
                 case .oauth:
-                    await viewModel.addOAuthAccount(
+                    succeeded = await viewModel.addOAuthAccount(
                         serverURL: input.serverURL,
                         authenticator: oauthAuthenticator(input.serverURL)
                     )
                 }
                 setupErrorMessage = viewModel.lastErrorMessage
-                if setupErrorMessage == nil {
+                if succeeded {
                     setupForm.reset()
                     showingSetup = false
                 }

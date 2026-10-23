@@ -358,8 +358,9 @@ public final class WesomeCloudViewModel {
         }
     }
 
-    public func addAccount(serverURL: URL, username: String, appPassword: String) async {
-        guard !isLoading else { return }
+    @discardableResult
+    public func addAccount(serverURL: URL, username: String, appPassword: String) async -> Bool {
+        guard !isLoading else { return false }
         let trackingSession = tracking.sessionID
         tracking.capture(.addAccount)
         isLoading = true
@@ -382,14 +383,17 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
             await refreshFinderStatus()
+            return true
         } catch {
             tracking.captureError(error, operation: .addAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return false
         }
     }
 
-    public func addOAuthAccount(serverURL: URL, authenticator: OAuthAuthenticating) async {
-        guard !isLoading else { return }
+    @discardableResult
+    public func addOAuthAccount(serverURL: URL, authenticator: OAuthAuthenticating) async -> Bool {
+        guard !isLoading else { return false }
         let trackingSession = tracking.sessionID
         tracking.capture(.addOAuthAccount)
         isLoading = true
@@ -412,9 +416,11 @@ public final class WesomeCloudViewModel {
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
             await refreshFinderStatus()
+            return true
         } catch {
             tracking.captureError(error, operation: .addOAuthAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return false
         }
     }
 
