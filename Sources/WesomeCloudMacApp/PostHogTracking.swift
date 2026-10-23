@@ -198,6 +198,8 @@ private final class TrackingRedirectDelegate: NSObject, URLSessionTaskDelegate {
 }
 
 public enum TrackingEvent: String, Sendable {
+    case checkFinderStatus = "finder_status_checked"
+    case openFinderLocation = "finder_location_open_requested"
     case appOpened = "app_opened"
     case refresh = "dashboard_refreshed"
     case restoreFinderLocations = "finder_locations_restored"

@@ -596,7 +596,7 @@ func viewModelSyncsSelectedSpace() async throws {
 
     #expect(viewModel.accounts.first?.domain?.displayName == "Marketing")
     #expect(viewModel.accounts.first?.domain?.webDAVRootURL == URL(string: "https://cloud.example/dav/spaces/storage-users-1$space")!)
-    #expect(viewModel.accounts.first?.lastSyncStatus.message == "Connected to Marketing")
+    #expect(viewModel.accounts.first?.lastSyncStatus.message == "Selected Marketing for Finder")
     #expect(viewModel.lastErrorMessage == nil)
 }
 
@@ -819,6 +819,7 @@ func conflictRowViewModelSummarizesRemoteDeleteConflict() {
 @Test
 func accountSetupFormValidatesRequiredFieldsAndURLs() {
     let form = AccountSetupFormModel()
+    form.mode = .appPassword
 
     #expect(!form.canSubmit)
     #expect(form.validateForSubmit() == nil)
@@ -841,13 +842,13 @@ func accountSetupFormValidatesRequiredFieldsAndURLs() {
     #expect(form.serverURLText.isEmpty)
     #expect(form.username.isEmpty)
     #expect(form.appPassword.isEmpty)
+    #expect(form.mode == .oauth)
 }
 
 @MainActor
 @Test
-func accountSetupFormAllowsOAuthWithOnlyServerURL() {
+func accountSetupFormDefaultsToBrowserSignInWithOnlyServerURL() {
     let form = AccountSetupFormModel()
-    form.mode = .oauth
     form.serverURLText = "https://cloud.example/"
 
     let input = form.validateForSubmit()
@@ -1731,4 +1732,85 @@ func dashboardFileActionsUseTheFilesSpace() async throws {
     #expect(viewModel.lastErrorMessage == nil)
     let url = try #require(await transport.requests.first?.url)
     #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "space_ref" }?.value == "storage$HR!file")
+}
+
+
+private actor MutableFinderIntegration: FinderIntegrationChecking {
+    var result: Result<FinderIntegrationStatus, URLError> = .success(.notRegistered)
+
+    func set(_ result: Result<FinderIntegrationStatus, URLError>) {
+        self.result = result
+    }
+
+    func status() async throws -> FinderIntegrationStatus {
+        try result.get()
+    }
+}
+
+@MainActor
+@Test
+func finderSetupTracksSelectionActivationFailureAndRecovery() async throws {
+    let credentials = MemoryCredentialStore()
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice", displayName: "Alice")
+    try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "secret", kind: .appPassword))
+    let space = OwnCloudSpace(id: "am", name: "AM", webDAVURL: URL(string: "https://cloud.example/dav/spaces/am")!)
+    let repository = MemoryAccountRepository(records: [PersistedAccountRecord(account: account)])
+    let systemDomains = MemoryFileProviderDomainManager()
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(
+            credentialStore: credentials,
+            capabilitiesFetcher: MacAppCapabilitiesFetcher(),
+            spacesFetcher: MacAppSpacesFetcher(spaces: [space])
+        ),
+        domains: FileProviderDomainService(manager: UnifiedFileProviderDomainManager(manager: systemDomains), repository: repository),
+        repository: repository
+    )
+    let finder = MutableFinderIntegration()
+    let opener = RecordingURLOpener()
+    let viewModel = WesomeCloudViewModel(model: model, finderIntegration: finder, urlOpener: opener)
+    let location = URL(fileURLWithPath: "/preview/CloudStorage/WesomeCloud")
+
+    // An account alone must not claim that Finder is ready.
+    await finder.set(.success(.enabled(location)))
+    await viewModel.refresh()
+    #expect(viewModel.finderStatus == .notRegistered)
+    await viewModel.openFinderLocation()
+    #expect(opener.openedURLs.isEmpty)
+
+    await finder.set(.success(.activationRequired(location)))
+    await viewModel.syncSpace(try #require(viewModel.spaces.first))
+    #expect(viewModel.finderStatus == .activationRequired(location))
+    #expect(viewModel.spaces.first?.isSelected == true)
+    await viewModel.openFinderLocation()
+    #expect(opener.openedURLs == [location])
+
+    await finder.set(.success(.enabled(location)))
+    await viewModel.refreshFinderStatus()
+    #expect(viewModel.finderStatus == .enabled(location))
+
+    await finder.set(.failure(URLError(.cannotConnectToHost)))
+    await viewModel.refreshFinderStatus()
+    guard case .unavailable = viewModel.finderStatus else {
+        Issue.record("A failed query must replace the previous enabled status")
+        return
+    }
+    await finder.set(.success(.disconnected(location)))
+    await viewModel.refreshFinderStatus()
+    #expect(viewModel.finderStatus == .disconnected(location))
+
+    // Re-registering a missing system domain preserves the selected Space.
+    try await systemDomains.remove(domainID: UnifiedFileProviderDomainManager.domain.id)
+    await finder.set(.success(.notRegistered))
+    await viewModel.refreshFinderStatus()
+    #expect(viewModel.finderStatus == .notRegistered)
+    await viewModel.retryFinderSetup()
+    #expect(try await systemDomains.domains().map(\.id) == [UnifiedFileProviderDomainManager.domain.id])
+    #expect(viewModel.spaces.first?.isSelected == true)
+
+    await finder.set(.success(.enabled(location)))
+    await viewModel.removeSpace(try #require(viewModel.spaces.first))
+    #expect(viewModel.finderStatus == .notRegistered)
+    #expect(viewModel.spaces.first?.isSelected == false)
+    await viewModel.openFinderLocation()
+    #expect(opener.openedURLs == [location])
 }
