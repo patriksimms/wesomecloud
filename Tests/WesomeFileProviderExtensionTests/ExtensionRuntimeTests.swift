@@ -2559,11 +2559,10 @@ func finderAuthenticationHealthRemainsVisibleUntilExtensionActuallyRecovers() as
     #expect(try await model.loadSnapshot().accounts.first?.lastSyncStatus.state == .error)
     try await model.updateSyncStatus(SyncStatusSnapshot(state: .idle, message: "Up to date"), accountID: account.id)
     #expect(try await model.loadSnapshot().accounts.first?.lastSyncStatus.state == .error)
-    #expect(try await model.finderSignInAccountIDs() == [account.id])
+    #expect(try await health.issue(accountID: account.id)?.reason == .authentication)
 
     await transport.set(status: 207)
     _ = try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!))
     #expect(try await health.issue(accountID: account.id) == nil)
     #expect(try await model.loadSnapshot().accounts.first?.lastSyncStatus.state == .idle)
-    #expect(try await model.finderSignInAccountIDs().isEmpty)
 }

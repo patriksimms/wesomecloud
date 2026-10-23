@@ -649,6 +649,11 @@ public actor AccountSessionService {
         return resolved.credentials
     }
 
+    public func validateCredentials(for account: Account) async throws {
+        let resolved = try await resolveCredentials(for: account)
+        _ = try await capabilitiesFetcher.fetchCapabilities(serverURL: account.serverURL, credentials: resolved)
+    }
+
     public func credentialKind(accountID: UUID) async throws -> CredentialKind? {
         try await credentialStore.credential(accountID: accountID)?.kind
     }

@@ -451,14 +451,39 @@ public actor WesomeCloudAppModel {
         try await accountSessions.credentialKind(accountID: accountID)
     }
 
-    public func finderSignInAccountIDs() async throws -> [UUID] {
-        var ids: [UUID] = []
+    /// Recovery checks authentication without processing files or overriding sync pause.
+    /// Each account keeps its own result, so an offline server cannot hide another login.
+    public func recoverFinder() async throws -> PersistedAccountRecord? {
+        var signInAccount: PersistedAccountRecord?
+        var firstError: Error?
         for record in try await repository.records() where !record.domains.isEmpty {
-            if try await fileProviderHealth?.issue(accountID: record.id)?.reason == .authentication {
-                ids.append(record.id)
+            do {
+                try await accountSessions.validateCredentials(for: record.account)
+            } catch {
+                firstError = firstError ?? error
+                let needsLogin: Bool
+                switch error {
+                case WesomeCloudError.httpFailure(let failure):
+                    needsLogin = failure.kind == .authentication
+                case WesomeCloudError.unsupported(let message):
+                    needsLogin = message.hasPrefix("Missing credential for account")
+                default:
+                    needsLogin = false
+                }
+                if needsLogin, signInAccount == nil { signInAccount = record }
+                await diagnostics.record(DiagnosticEvent(category: "FileProvider", level: .error, message: "Finder recovery failed for account \(record.id): \(UserFacingErrorFormatter.message(for: error))"))
+                continue
+            }
+            do {
+                try await domains.authenticationSucceeded(for: record.domains)
+            } catch {
+                firstError = firstError ?? error
+                await diagnostics.record(DiagnosticEvent(category: "FileProvider", level: .error, message: "Could not retry Finder after authentication: \(UserFacingErrorFormatter.message(for: error))"))
             }
         }
-        return ids
+        if let signInAccount { return signInAccount }
+        if let firstError { throw firstError }
+        return nil
     }
 
     public func syncSpace(_ space: AppSpace) async throws -> PersistedAccountRecord {
