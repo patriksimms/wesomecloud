@@ -2565,6 +2565,25 @@ func finderAuthenticationHealthRemainsVisibleUntilExtensionActuallyRecovers() as
     _ = try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!))
     #expect(try await health.issue(accountID: account.id) == nil)
     #expect(try await model.loadSnapshot().accounts.first?.lastSyncStatus.state == .idle)
+
+    // Advisory storage failures must not block either consumer. Use a directory
+    // where the health file belongs to produce a real read error.
+    let healthFile = paths.root.appending(path: "FileProviderHealth/" + account.id.uuidString + ".json")
+    try FileManager.default.createDirectory(at: healthFile, withIntermediateDirectories: false)
+    #expect(try await model.loadSnapshot().accounts.first?.lastSyncStatus.state == .idle)
+    #expect(try await model.loadSnapshot().diagnostics.contains { $0.category == "FileProvider" && $0.level == .warning })
+    #expect(try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!)).items.count == 1)
+
+    // Even when health cannot be read or written, rejected credentials retain
+    // their original authentication error.
+    try FileManager.default.createDirectory(at: healthFile, withIntermediateDirectories: false)
+    await transport.set(status: 401)
+    do {
+        _ = try await runtime.adapter.enumerate(container: .item(id: folder.id, path: folder.path!))
+        Issue.record("Expected rejected credentials")
+    } catch WesomeCloudError.httpFailure(let failure) {
+        #expect(failure.kind == .authentication)
+    }
 }
 
 @Test

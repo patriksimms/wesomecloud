@@ -255,7 +255,13 @@ public actor ProductionDomainRuntimeResolver {
     private func resolvedCredentials(account: Account, credential: Credential) async throws -> ResolvedAccountCredentials {
         // Read shared health before selecting the cache entry: this await can admit
         // another request that has already started the recovery refresh.
-        let issue = try await health.issue(accountID: account.id)
+        let issue: FileProviderAccountIssue?
+        do {
+            issue = try await health.issue(accountID: account.id)
+        } catch {
+            await WesomeLogger(category: "FileProvider").warning("Could not read advisory Finder health: \(error)")
+            issue = nil
+        }
         let resolution: Task<ResolvedAccountCredentials, Error>
         let startedAt: Date
         if let cached = accountCredentials[account.id], cached.account == account, cached.credential == credential,

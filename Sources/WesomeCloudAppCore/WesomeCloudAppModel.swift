@@ -343,8 +343,12 @@ public actor WesomeCloudAppModel {
         let spaces = await loadSpaces(for: try await repository.records())
         var accounts = try await repository.records()
         for index in accounts.indices where !accounts[index].domains.isEmpty {
-            if let issue = try await fileProviderHealth?.issue(accountID: accounts[index].id) {
-                accounts[index].lastSyncStatus = SyncStatusSnapshot(state: .error, message: issue.message, updatedAt: issue.occurredAt)
+            do {
+                if let issue = try await fileProviderHealth?.issue(accountID: accounts[index].id) {
+                    accounts[index].lastSyncStatus = SyncStatusSnapshot(state: .error, message: issue.message, updatedAt: issue.occurredAt)
+                }
+            } catch {
+                await diagnostics.record(DiagnosticEvent(category: "FileProvider", level: .warning, message: "Could not read advisory Finder health: \(error)"))
             }
         }
         return try await AppSnapshot(
