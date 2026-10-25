@@ -500,7 +500,7 @@ public actor WesomeCloudAppModel {
         }
         let domain = try await domains.registerDomain(for: record.account, space: space.space)
         record.domains.append(domain)
-        record.lastSyncStatus = SyncStatusSnapshot(state: .idle, message: "Connected to \(space.space.name)")
+        record.lastSyncStatus = SyncStatusSnapshot(state: .idle, message: "Selected \(space.space.name) for Finder")
         try await repository.save(record)
         try await refreshFinderSelections()
         await diagnostics.record(DiagnosticEvent(category: "Spaces", level: .info, message: "Syncing space \(space.space.name) for \(record.account.displayName)"))

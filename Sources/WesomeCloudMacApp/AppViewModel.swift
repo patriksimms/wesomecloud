@@ -128,7 +128,15 @@ public struct DashboardContent: Equatable, Sendable {
 @MainActor
 @Observable
 public final class WesomeCloudViewModel {
-    public private(set) var accounts: [PersistedAccountRecord] = []
+    public private(set) var accounts: [PersistedAccountRecord] = [] {
+        didSet {
+            if accounts.flatMap(\.domains) != oldValue.flatMap(\.domains) {
+                finderStatus = .checking
+            }
+        }
+    }
+    public private(set) var finderStatus: FinderIntegrationStatus = .checking
+    public private(set) var isCheckingFinder = false
     public private(set) var spaces: [AppSpace] = []
     public private(set) var notifications: [AppNotification] = []
     public private(set) var diagnostics: [DiagnosticEvent] = []
@@ -151,6 +159,7 @@ public final class WesomeCloudViewModel {
     public private(set) var lastDiagnosticsExportURL: URL?
 
     private let model: WesomeCloudAppModel
+    private let finderIntegration: any FinderIntegrationChecking
     private let clipboard: ClipboardWriting
     private let fileRevealer: FileRevealing
     private let urlOpener: URLOpening
@@ -162,9 +171,11 @@ public final class WesomeCloudViewModel {
     private var isSavingPreferences = false
     private var trackingConsentSaveWaiter: CheckedContinuation<Void, Never>?
     private var isInitializingTracking = false
+    private var finderRefreshRequested = false
 
     public init(
         model: WesomeCloudAppModel,
+        finderIntegration: any FinderIntegrationChecking = SystemFinderIntegration(),
         clipboard: ClipboardWriting = SystemClipboardWriter(),
         fileRevealer: FileRevealing = SystemFileRevealer(),
         urlOpener: URLOpening = SystemURLOpener(),
@@ -172,6 +183,7 @@ public final class WesomeCloudViewModel {
         tracking: PostHogTracking = PostHogTracking()
     ) {
         self.model = model
+        self.finderIntegration = finderIntegration
         self.clipboard = clipboard
         self.fileRevealer = fileRevealer
         self.urlOpener = urlOpener
@@ -241,6 +253,7 @@ public final class WesomeCloudViewModel {
         tracking.capture(.restoreFinderLocations)
         do {
             try await model.restoreFinderLocations()
+            lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .restoreFinderLocations, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
@@ -266,12 +279,56 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .refresh, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
         }
+    }
+
+    public func refreshFinderStatus() async {
+        guard !isCheckingFinder else {
+            finderRefreshRequested = true
+            return
+        }
+        isCheckingFinder = true
+        let trackingSession = tracking.sessionID
+        defer { isCheckingFinder = false }
+        while true {
+            finderRefreshRequested = false
+            let selections = accounts.flatMap(\.domains)
+            guard !selections.isEmpty else {
+                finderStatus = .notRegistered
+                return
+            }
+            do {
+                let status = try await finderIntegration.status()
+                // A retry after registration or activation needs a fresh system result.
+                guard !finderRefreshRequested, selections == accounts.flatMap(\.domains) else { continue }
+                finderStatus = status
+            } catch {
+                guard !finderRefreshRequested, selections == accounts.flatMap(\.domains) else { continue }
+                tracking.captureError(error, operation: .checkFinderStatus, sessionID: trackingSession)
+                finderStatus = .unavailable(UserFacingErrorFormatter.message(for: error))
+            }
+            return
+        }
+    }
+
+    public func retryFinderSetup() async {
+        await restoreFinderLocations()
+        await refreshFinderStatus()
+    }
+
+    public func openFinderLocation() async {
+        tracking.capture(.openFinderLocation)
+        await refreshFinderStatus()
+        guard let url = finderStatus.locationURL else { return }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        urlOpener.open(url)
     }
 
     public func syncNow() async {
@@ -297,6 +354,7 @@ public final class WesomeCloudViewModel {
             publicLinks = refreshed.publicLinks
             updateStatus = refreshed.updateStatus
             lastCreatedShare = refreshed.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
@@ -305,41 +363,46 @@ public final class WesomeCloudViewModel {
         }
     }
 
-    public func addAccount(serverURL: URL, username: String, appPassword: String) async {
+    @discardableResult
+    public func addAccount(serverURL: URL, username: String, appPassword: String) async -> Bool {
+        guard !isLoading else { return false }
         let trackingSession = tracking.sessionID
         tracking.capture(.addAccount)
         isLoading = true
         defer { isLoading = false }
         do {
-            _ = try await model.addAccount(serverURL: serverURL, username: username, appPassword: appPassword)
-            let snapshot = try await model.loadSnapshot()
-            accounts = snapshot.accounts
-            spaces = snapshot.spaces
-            notifications = snapshot.notifications
-            files = snapshot.files
-            diagnostics = snapshot.diagnostics
-            issues = snapshot.issues
-            conflicts = snapshot.conflicts
-            transfers = snapshot.transfers
-            storage = snapshot.storage
-            publicLinks = snapshot.publicLinks
-            updateStatus = snapshot.updateStatus
-            lastCreatedShare = snapshot.lastCreatedShare
-            preferences = try await model.loadPreferences()
-            lastErrorMessage = nil
+            let record = try await model.addAccount(serverURL: serverURL, username: username, appPassword: appPassword)
+            await refreshAfterConnecting(record, trackingSession: trackingSession)
+            return true
         } catch {
             tracking.captureError(error, operation: .addAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return false
         }
     }
 
-    public func addOAuthAccount(serverURL: URL, authenticator: OAuthAuthenticating) async {
+    @discardableResult
+    public func addOAuthAccount(serverURL: URL, authenticator: OAuthAuthenticating) async -> Bool {
+        guard !isLoading else { return false }
         let trackingSession = tracking.sessionID
         tracking.capture(.addOAuthAccount)
         isLoading = true
         defer { isLoading = false }
         do {
-            _ = try await model.addOAuthAccount(serverURL: serverURL, authenticator: authenticator)
+            let record = try await model.addOAuthAccount(serverURL: serverURL, authenticator: authenticator)
+            await refreshAfterConnecting(record, trackingSession: trackingSession)
+            return true
+        } catch {
+            tracking.captureError(error, operation: .addOAuthAccount, sessionID: trackingSession)
+            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return false
+        }
+    }
+
+    // Creation already succeeded. A dashboard failure must not invite another sign-in.
+    private func refreshAfterConnecting(_ record: PersistedAccountRecord, trackingSession: UUID?) async {
+        accounts.append(record)
+        do {
             let snapshot = try await model.loadSnapshot()
             accounts = snapshot.accounts
             spaces = snapshot.spaces
@@ -353,11 +416,14 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
-            tracking.captureError(error, operation: .addOAuthAccount, sessionID: trackingSession)
+            tracking.captureError(error, operation: .refresh, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            // A failed snapshot may have skipped the newly added account's Finder check.
+            if finderStatus == .checking { await refreshFinderStatus() }
         }
     }
 
@@ -403,6 +469,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
@@ -432,6 +499,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
@@ -461,6 +529,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
@@ -512,6 +581,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
         } catch {
@@ -622,6 +692,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .clearIssue, sessionID: trackingSession)
@@ -649,6 +720,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .resolveConflict, sessionID: trackingSession)
@@ -698,6 +770,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .setAvailabilityIntent, sessionID: trackingSession)
@@ -1168,7 +1241,7 @@ public extension PersistedAccountRecord {
 @MainActor
 @Observable
 public final class AccountSetupFormModel {
-    public var mode = AccountSetupMode.appPassword
+    public var mode = AccountSetupMode.oauth
     public var serverURLText = ""
     public var username = ""
     public var appPassword = ""
@@ -1210,7 +1283,7 @@ public final class AccountSetupFormModel {
         serverURLText = ""
         username = ""
         appPassword = ""
-        mode = .appPassword
+        mode = .oauth
         validationMessage = nil
     }
 }

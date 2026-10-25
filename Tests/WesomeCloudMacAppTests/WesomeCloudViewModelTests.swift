@@ -310,12 +310,13 @@ func viewModelRefreshesAndAddsAccountsThroughAppModel() async throws {
     await viewModel.refresh()
     #expect(viewModel.accounts.isEmpty)
 
-    await viewModel.addAccount(
+    let succeeded = await viewModel.addAccount(
         serverURL: URL(string: "https://cloud.example/")!,
         username: "alice",
         appPassword: "secret"
     )
 
+    #expect(succeeded)
     #expect(viewModel.accounts.count == 1)
     #expect(viewModel.accounts[0].serverVersion == "10.15.0")
     #expect(viewModel.lastErrorMessage == nil)
@@ -395,11 +396,12 @@ func viewModelAddsOAuthAccountThroughAppModel() async throws {
     )
     let viewModel = WesomeCloudViewModel(model: appModel)
 
-    await viewModel.addOAuthAccount(
+    let succeeded = await viewModel.addOAuthAccount(
         serverURL: URL(string: "https://cloud.example/")!,
         authenticator: MacAppOAuthAuthenticator()
     )
 
+    #expect(succeeded)
     #expect(viewModel.accounts.count == 1)
     #expect(viewModel.accounts.first?.account.username == "oauth-user")
     #expect(viewModel.accounts.first?.serverVersion == "10.15.0")
@@ -596,7 +598,7 @@ func viewModelSyncsSelectedSpace() async throws {
 
     #expect(viewModel.accounts.first?.domain?.displayName == "Marketing")
     #expect(viewModel.accounts.first?.domain?.webDAVRootURL == URL(string: "https://cloud.example/dav/spaces/storage-users-1$space")!)
-    #expect(viewModel.accounts.first?.lastSyncStatus.message == "Connected to Marketing")
+    #expect(viewModel.accounts.first?.lastSyncStatus.message == "Selected Marketing for Finder")
     #expect(viewModel.lastErrorMessage == nil)
 }
 
@@ -819,6 +821,7 @@ func conflictRowViewModelSummarizesRemoteDeleteConflict() {
 @Test
 func accountSetupFormValidatesRequiredFieldsAndURLs() {
     let form = AccountSetupFormModel()
+    form.mode = .appPassword
 
     #expect(!form.canSubmit)
     #expect(form.validateForSubmit() == nil)
@@ -841,13 +844,13 @@ func accountSetupFormValidatesRequiredFieldsAndURLs() {
     #expect(form.serverURLText.isEmpty)
     #expect(form.username.isEmpty)
     #expect(form.appPassword.isEmpty)
+    #expect(form.mode == .oauth)
 }
 
 @MainActor
 @Test
-func accountSetupFormAllowsOAuthWithOnlyServerURL() {
+func accountSetupFormDefaultsToBrowserSignInWithOnlyServerURL() {
     let form = AccountSetupFormModel()
-    form.mode = .oauth
     form.serverURLText = "https://cloud.example/"
 
     let input = form.validateForSubmit()
@@ -1731,6 +1734,305 @@ func dashboardFileActionsUseTheFilesSpace() async throws {
     #expect(viewModel.lastErrorMessage == nil)
     let url = try #require(await transport.requests.first?.url)
     #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "space_ref" }?.value == "storage$HR!file")
+}
+
+
+private actor MutableFinderIntegration: FinderIntegrationChecking {
+    var result: Result<FinderIntegrationStatus, URLError> = .success(.notRegistered)
+
+    func set(_ result: Result<FinderIntegrationStatus, URLError>) {
+        self.result = result
+    }
+
+    func status() async throws -> FinderIntegrationStatus {
+        try result.get()
+    }
+}
+
+@MainActor
+@Test
+func finderSetupTracksSelectionActivationFailureAndRecovery() async throws {
+    let credentials = MemoryCredentialStore()
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice", displayName: "Alice")
+    try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "secret", kind: .appPassword))
+    let space = OwnCloudSpace(id: "am", name: "AM", webDAVURL: URL(string: "https://cloud.example/dav/spaces/am")!)
+    let repository = MemoryAccountRepository(records: [PersistedAccountRecord(account: account)])
+    let systemDomains = MemoryFileProviderDomainManager()
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(
+            credentialStore: credentials,
+            capabilitiesFetcher: MacAppCapabilitiesFetcher(),
+            spacesFetcher: MacAppSpacesFetcher(spaces: [space])
+        ),
+        domains: FileProviderDomainService(manager: UnifiedFileProviderDomainManager(manager: systemDomains), repository: repository),
+        repository: repository
+    )
+    let finder = MutableFinderIntegration()
+    let opener = RecordingURLOpener()
+    let viewModel = WesomeCloudViewModel(model: model, finderIntegration: finder, urlOpener: opener)
+    let location = URL(fileURLWithPath: "/preview/CloudStorage/WesomeCloud")
+
+    // An account alone must not claim that Finder is ready.
+    await finder.set(.success(.enabled(location)))
+    await viewModel.refresh()
+    #expect(viewModel.finderStatus == .notRegistered)
+    await viewModel.openFinderLocation()
+    #expect(opener.openedURLs.isEmpty)
+
+    await finder.set(.success(.activationRequired(location)))
+    await viewModel.syncSpace(try #require(viewModel.spaces.first))
+    #expect(viewModel.finderStatus == .activationRequired(location))
+    #expect(viewModel.spaces.first?.isSelected == true)
+    await viewModel.openFinderLocation()
+    #expect(opener.openedURLs == [location])
+
+    await finder.set(.success(.enabled(location)))
+    await viewModel.refreshFinderStatus()
+    #expect(viewModel.finderStatus == .enabled(location))
+
+    await finder.set(.failure(URLError(.cannotConnectToHost)))
+    await viewModel.refreshFinderStatus()
+    guard case .unavailable = viewModel.finderStatus else {
+        Issue.record("A failed query must replace the previous enabled status")
+        return
+    }
+    await finder.set(.success(.disconnected(location)))
+    await viewModel.refreshFinderStatus()
+    #expect(viewModel.finderStatus == .disconnected(location))
+
+    // Re-registering a missing system domain preserves the selected Space.
+    try await systemDomains.remove(domainID: UnifiedFileProviderDomainManager.domain.id)
+    await finder.set(.success(.notRegistered))
+    await viewModel.refreshFinderStatus()
+    #expect(viewModel.finderStatus == .notRegistered)
+    await viewModel.retryFinderSetup()
+    #expect(try await systemDomains.domains().map(\.id) == [UnifiedFileProviderDomainManager.domain.id])
+    #expect(viewModel.spaces.first?.isSelected == true)
+
+    await finder.set(.success(.enabled(location)))
+    await viewModel.removeSpace(try #require(viewModel.spaces.first))
+    #expect(viewModel.finderStatus == .notRegistered)
+    #expect(viewModel.spaces.first?.isSelected == false)
+    await viewModel.openFinderLocation()
+    #expect(opener.openedURLs == [location])
+}
+
+private actor SuspendedCapabilitiesFetcher: CapabilitiesFetching {
+    private var requested = false
+    private var requestWaiter: CheckedContinuation<Void, Never>?
+    private var responseWaiter: CheckedContinuation<Void, Never>?
+
+    func fetchCapabilities(serverURL: URL, credentials: Credentials) async throws -> ServerCapabilities {
+        requested = true
+        requestWaiter?.resume()
+        requestWaiter = nil
+        await withCheckedContinuation { responseWaiter = $0 }
+        throw URLError(.cannotConnectToHost)
+    }
+
+    func waitForRequest() async {
+        if requested { return }
+        await withCheckedContinuation { requestWaiter = $0 }
+    }
+
+    func failRequest() {
+        responseWaiter?.resume()
+        responseWaiter = nil
+    }
+}
+
+@MainActor
+@Test(arguments: AccountSetupMode.allCases)
+func repeatedSignInDoesNotDismissPendingAttempt(mode: AccountSetupMode) async {
+    let capabilities = SuspendedCapabilitiesFetcher()
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(
+            credentialStore: MemoryCredentialStore(),
+            capabilitiesFetcher: capabilities
+        ),
+        domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+        repository: MemoryAccountRepository()
+    )
+    let viewModel = WesomeCloudViewModel(model: model)
+    let submit = { @MainActor in
+        switch mode {
+        case .appPassword:
+            await viewModel.addAccount(serverURL: URL(string: "https://cloud.example/")!, username: "alice", appPassword: "secret")
+        case .oauth:
+            await viewModel.addOAuthAccount(serverURL: URL(string: "https://cloud.example/")!, authenticator: MacAppOAuthAuthenticator())
+        }
+    }
+
+    let firstAttempt = Task { await submit() }
+    await capabilities.waitForRequest()
+    let shouldDismiss = await submit()
+    #expect(!shouldDismiss, "A skipped sign-in must not dismiss the pending attempt")
+    #expect(viewModel.isLoading)
+    #expect(viewModel.accounts.isEmpty)
+
+    await capabilities.failRequest()
+    #expect(await firstAttempt.value == false)
+    #expect(viewModel.lastErrorMessage != nil)
+    #expect(!viewModel.isLoading)
+}
+
+private actor DelayedFinderIntegration: FinderIntegrationChecking {
+    let domains: MemoryFileProviderDomainManager
+    let location = URL(fileURLWithPath: "/preview/CloudStorage/WesomeCloud")
+    private var delayNextCheck = false
+    private var failDelayedCheck = false
+    private var responseWaiter: CheckedContinuation<Void, Never>?
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+
+    init(domains: MemoryFileProviderDomainManager) {
+        self.domains = domains
+    }
+
+    func delayNextCheck(failing: Bool) {
+        delayNextCheck = true
+        failDelayedCheck = failing
+    }
+
+    func waitForDelayedCheck() async {
+        if responseWaiter != nil { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func releaseDelayedCheck() {
+        responseWaiter?.resume()
+        responseWaiter = nil
+    }
+
+    func status() async throws -> FinderIntegrationStatus {
+        let registered = try await domains.domains().contains { $0.id == UnifiedFileProviderDomainManager.domain.id }
+        let snapshot: FinderIntegrationStatus = registered ? .enabled(location) : .notRegistered
+        if delayNextCheck {
+            delayNextCheck = false
+            let failing = failDelayedCheck
+            await withCheckedContinuation {
+                responseWaiter = $0
+                startedWaiter?.resume()
+                startedWaiter = nil
+            }
+            if failing { throw URLError(.cannotConnectToHost) }
+        }
+        return snapshot
+    }
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func finderRetryDiscardsStatusCapturedBeforeRegistration(staleError: Bool) async throws {
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let selection = CloudDomain(id: "selected-space", accountID: account.id, displayName: "AM")
+    let domains = MemoryFileProviderDomainManager()
+    let finder = DelayedFinderIntegration(domains: domains)
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
+        domains: FileProviderDomainService(manager: UnifiedFileProviderDomainManager(manager: domains)),
+        repository: MemoryAccountRepository(records: [PersistedAccountRecord(account: account, domain: selection)])
+    )
+    let viewModel = WesomeCloudViewModel(model: model, finderIntegration: finder)
+    await viewModel.refresh()
+    #expect(viewModel.finderStatus == .notRegistered)
+
+    await finder.delayNextCheck(failing: staleError)
+    let previousCheck = Task { await viewModel.refreshFinderStatus() }
+    await finder.waitForDelayedCheck()
+    await viewModel.retryFinderSetup()
+    #expect(try await domains.domains().map(\.id) == [UnifiedFileProviderDomainManager.domain.id])
+    #expect(viewModel.accounts.first?.domains == [selection])
+
+    await finder.releaseDelayedCheck()
+    await previousCheck.value
+    #expect(viewModel.finderStatus == .enabled(finder.location))
+    #expect(!viewModel.isCheckingFinder)
+}
+
+private actor RenamableSpacesFetcher: SpacesFetching {
+    private var space: OwnCloudSpace
+
+    init(space: OwnCloudSpace) { self.space = space }
+
+    func rename(to name: String) { space.name = name }
+
+    func fetchSpaces(serverURL: URL, credentials: Credentials) async throws -> [OwnCloudSpace] { [space] }
+}
+
+@MainActor
+@Test
+func finderStatusRecoversFromSnapshotUpdatesWithoutPreferencesOrExplicitRefresh() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let preferencesURL = directory.appending(path: "preferences.json")
+    try Data("invalid json".utf8).write(to: preferencesURL)
+    let preferences = JSONPreferencesRepository(fileURL: preferencesURL)
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let space = OwnCloudSpace(id: "am", name: "AM", webDAVURL: URL(string: "https://cloud.example/dav/spaces/am")!)
+    let selection = CloudDomain(id: "selected-space", accountID: account.id, displayName: space.name, webDAVRootURL: space.webDAVURL)
+    let credentials = MemoryCredentialStore()
+    try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "secret", kind: .appPassword))
+    let spaces = RenamableSpacesFetcher(space: space)
+    let metadata = InMemoryMetadataStore()
+    try await metadata.recordSyncError(SyncErrorRecord(scope: .operation, message: "Transfer failed", isRecoverable: false), accountID: selection.metadataID)
+    let finder = MutableFinderIntegration()
+    let location = URL(fileURLWithPath: "/preview/CloudStorage/WesomeCloud")
+    await finder.set(.success(.enabled(location)))
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(credentialStore: credentials, capabilitiesFetcher: MacAppCapabilitiesFetcher(), spacesFetcher: spaces),
+        domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+        repository: MemoryAccountRepository(records: [PersistedAccountRecord(account: account, domain: selection)]),
+        preferencesRepository: preferences,
+        metadataStore: metadata
+    )
+    let viewModel = WesomeCloudViewModel(model: model, finderIntegration: finder)
+
+    await viewModel.refresh()
+    #expect(viewModel.lastErrorMessage != nil)
+    #expect(viewModel.finderStatus == .enabled(location))
+
+    try await preferences.save(AppPreferences())
+    await viewModel.refresh()
+    let issue = try #require(viewModel.issues.first)
+    await spaces.rename(to: "Renamed AM")
+    await viewModel.clearIssue(issue)
+
+    #expect(viewModel.accounts.first?.domain?.displayName == "Renamed AM")
+    #expect(viewModel.finderStatus == .enabled(location))
+    #expect(viewModel.lastErrorMessage == nil)
+}
+
+@MainActor
+@Test(arguments: AccountSetupMode.allCases)
+func persistedAccountRemainsSuccessfulWhenPreferencesCannotLoad(mode: AccountSetupMode) async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let preferencesURL = directory.appending(path: "preferences.json")
+    try Data("invalid json".utf8).write(to: preferencesURL)
+    let repository = MemoryAccountRepository()
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore(), capabilitiesFetcher: MacAppCapabilitiesFetcher()),
+        domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+        repository: repository,
+        preferencesRepository: JSONPreferencesRepository(fileURL: preferencesURL)
+    )
+    let viewModel = WesomeCloudViewModel(model: model)
+    let succeeded: Bool
+    switch mode {
+    case .appPassword:
+        succeeded = await viewModel.addAccount(serverURL: URL(string: "https://cloud.example/")!, username: "alice", appPassword: "secret")
+    case .oauth:
+        succeeded = await viewModel.addOAuthAccount(serverURL: URL(string: "https://cloud.example/")!, authenticator: MacAppOAuthAuthenticator())
+    }
+
+    #expect(succeeded, "A saved account must dismiss setup even if its dashboard refresh fails")
+    let persisted = try await repository.records()
+    #expect(persisted.count == 1)
+    #expect(viewModel.accounts.map(\.id) == persisted.map(\.id))
+    #expect(viewModel.lastErrorMessage != nil)
+    #expect(!viewModel.isLoading)
 }
 
 private actor RecoveryCapabilitiesFetcher: CapabilitiesFetching {

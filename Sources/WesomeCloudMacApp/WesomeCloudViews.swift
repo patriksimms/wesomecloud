@@ -19,6 +19,7 @@ public struct WesomeCloudRootView: View {
     @State private var accountPendingRemoval: PersistedAccountRecord?
     @State private var selectedAccountID: UUID?
     @State private var showingSetup = false
+    @State private var setupErrorMessage: String?
     @State private var showingSettings = false
     @State private var showingTrackingConsent = false
 
@@ -56,10 +57,12 @@ public struct WesomeCloudRootView: View {
                 }
                 .disabled(viewModel.isLoading)
                 Button {
+                    setupErrorMessage = nil
                     showingSetup = true
                 } label: {
                     Label("Add Account", systemImage: "plus")
                 }
+                .disabled(viewModel.isLoading)
                 Button {
                     preferencesForm.update(from: viewModel.preferences)
                     showingSettings = true
@@ -81,68 +84,87 @@ public struct WesomeCloudRootView: View {
                 .disabled(viewModel.isLoading)
             }
         } detail: {
-            DashboardView(
-                accounts: dashboard.accounts,
-                spaces: dashboard.spaces,
-                notifications: dashboard.notifications,
-                storage: dashboard.storage,
-                files: dashboard.files,
-                diagnostics: dashboard.diagnostics,
-                issues: dashboard.issues,
-                conflicts: dashboard.conflicts,
-                transfers: dashboard.transfers,
-                publicLinks: dashboard.publicLinks,
-                updateStatus: dashboard.updateStatus,
-                errorMessage: dashboard.lastErrorMessage,
-                diagnosticsExportURL: dashboard.lastDiagnosticsExportURL,
-                lastCreatedShare: dashboard.lastCreatedShare,
-                reconnectAccount: { account in
-                    beginReconnect(account)
-                },
-                openServerInBrowser: { account in
-                    viewModel.openServerInBrowser(account)
-                },
-                removeAccount: { account in
-                    accountPendingRemoval = account
-                },
-                syncSpace: { space in
-                    Task { await viewModel.syncSpace(space) }
-                },
-                removeSpace: { space in spacePendingRemoval = space },
-                dismissNotification: { notification in
-                    Task { await viewModel.dismissNotification(notification) }
-                },
-                clearIssue: { issue in
-                    Task { await viewModel.clearIssue(issue) }
-                },
-                resolveConflict: { conflict, decision, resolvedName in
-                    Task { await viewModel.resolveConflict(conflict, decision: decision, resolvedName: resolvedName) }
-                },
-                setAvailabilityIntent: { file, intent in
-                    Task { await viewModel.setAvailabilityIntent(intent, for: file) }
-                },
-                createPublicLink: { file in
-                    Task { await viewModel.createPublicLink(for: file) }
-                },
-                refreshPublicLinks: { file in
-                    Task { await viewModel.refreshPublicLinks(for: file) }
-                },
-                copyPrivateLink: { file in
-                    Task { await viewModel.copyPrivateLink(for: file) }
-                },
-                revealInFinder: { file in
-                    viewModel.revealInFinder(file)
-                },
-                revealDiagnosticsExport: {
-                    viewModel.revealDiagnosticsExport()
-                },
-                copyPublicLink: { link in
-                    viewModel.copyPublicLink(link)
-                },
-                deletePublicLink: { link in
-                    Task { await viewModel.deletePublicLink(link) }
+            if viewModel.accounts.isEmpty {
+                WelcomeView(isLoading: viewModel.isLoading, errorMessage: viewModel.lastErrorMessage) {
+                    setupForm.reset()
+                    setupErrorMessage = nil
+                    showingSetup = true
                 }
-            )
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    FinderSetupView(
+                        hasSelections: dashboard.accounts.contains { !$0.domains.isEmpty },
+                        status: viewModel.finderStatus,
+                        isChecking: viewModel.isCheckingFinder,
+                        openFinder: { Task { await viewModel.openFinderLocation() } },
+                        checkAgain: { Task { await viewModel.refreshFinderStatus() } },
+                        retrySetup: { Task { await viewModel.retryFinderSetup() } }
+                    )
+                    .padding(24)
+                    DashboardView(
+                        accounts: dashboard.accounts,
+                        spaces: dashboard.spaces,
+                        notifications: dashboard.notifications,
+                        storage: dashboard.storage,
+                        files: dashboard.files,
+                        diagnostics: dashboard.diagnostics,
+                        issues: dashboard.issues,
+                        conflicts: dashboard.conflicts,
+                        transfers: dashboard.transfers,
+                        publicLinks: dashboard.publicLinks,
+                        updateStatus: dashboard.updateStatus,
+                        errorMessage: dashboard.lastErrorMessage,
+                        diagnosticsExportURL: dashboard.lastDiagnosticsExportURL,
+                        lastCreatedShare: dashboard.lastCreatedShare,
+                        reconnectAccount: { account in
+                            beginReconnect(account)
+                        },
+                        openServerInBrowser: { account in
+                            viewModel.openServerInBrowser(account)
+                        },
+                        removeAccount: { account in
+                            accountPendingRemoval = account
+                        },
+                        syncSpace: { space in
+                            Task { await viewModel.syncSpace(space) }
+                        },
+                        removeSpace: { space in spacePendingRemoval = space },
+                        dismissNotification: { notification in
+                            Task { await viewModel.dismissNotification(notification) }
+                        },
+                        clearIssue: { issue in
+                            Task { await viewModel.clearIssue(issue) }
+                        },
+                        resolveConflict: { conflict, decision, resolvedName in
+                            Task { await viewModel.resolveConflict(conflict, decision: decision, resolvedName: resolvedName) }
+                        },
+                        setAvailabilityIntent: { file, intent in
+                            Task { await viewModel.setAvailabilityIntent(intent, for: file) }
+                        },
+                        createPublicLink: { file in
+                            Task { await viewModel.createPublicLink(for: file) }
+                        },
+                        refreshPublicLinks: { file in
+                            Task { await viewModel.refreshPublicLinks(for: file) }
+                        },
+                        copyPrivateLink: { file in
+                            Task { await viewModel.copyPrivateLink(for: file) }
+                        },
+                        revealInFinder: { file in
+                            viewModel.revealInFinder(file)
+                        },
+                        revealDiagnosticsExport: {
+                            viewModel.revealDiagnosticsExport()
+                        },
+                        copyPublicLink: { link in
+                            viewModel.copyPublicLink(link)
+                        },
+                        deletePublicLink: { link in
+                            Task { await viewModel.deletePublicLink(link) }
+                        }
+                    )
+                }
+            }
         }
         .task(id: finderRecoveryRequestCount) {
             await viewModel.initializeTracking()
@@ -153,7 +175,15 @@ public struct WesomeCloudRootView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active, !viewModel.isLoading { Task { await viewModel.refresh() } }
+            if phase == .active {
+                Task {
+                    if viewModel.isLoading {
+                        await viewModel.refreshFinderStatus()
+                    } else {
+                        await viewModel.refresh()
+                    }
+                }
+            }
         }
         .onChange(of: viewModel.accounts.map(\.id)) { _, accountIDs in
             if let selectedAccountID, !accountIDs.contains(selectedAccountID) {
@@ -177,21 +207,23 @@ public struct WesomeCloudRootView: View {
             .interactiveDismissDisabled()
         }
         .sheet(isPresented: $showingSetup) {
-            AccountSetupView(form: setupForm) { input in
+            AccountSetupView(form: setupForm, isSubmitting: viewModel.isLoading, errorMessage: setupErrorMessage) { input in
+                let succeeded: Bool
                 switch input.mode {
                 case .appPassword:
-                    await viewModel.addAccount(
+                    succeeded = await viewModel.addAccount(
                         serverURL: input.serverURL,
                         username: input.username,
                         appPassword: input.appPassword
                     )
                 case .oauth:
-                    await viewModel.addOAuthAccount(
+                    succeeded = await viewModel.addOAuthAccount(
                         serverURL: input.serverURL,
                         authenticator: oauthAuthenticator(input.serverURL)
                     )
                 }
-                if viewModel.lastErrorMessage == nil {
+                setupErrorMessage = viewModel.lastErrorMessage
+                if succeeded {
                     setupForm.reset()
                     showingSetup = false
                 }
@@ -1265,12 +1297,96 @@ public struct DiagnosticsList: View {
     }
 }
 
+private struct WelcomeView: View {
+    var isLoading: Bool
+    var errorMessage: String?
+    var signIn: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Connect your ownCloud account")
+                .font(.title2.weight(.semibold))
+            Text("Sign in, then choose the Spaces you want to browse in Finder.")
+                .foregroundStyle(.secondary)
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red)
+            }
+            Button("Sign in with browser", action: signIn)
+                .buttonStyle(.borderedProminent)
+                .disabled(isLoading)
+            if isLoading { ProgressView().controlSize(.small) }
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct FinderSetupView: View {
+    var hasSelections: Bool
+    var status: FinderIntegrationStatus
+    var isChecking: Bool
+    var openFinder: () -> Void
+    var checkAgain: () -> Void
+    var retrySetup: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.headline)
+            Text(detail).foregroundStyle(.secondary)
+            if hasSelections {
+                HStack {
+                    if status.locationURL != nil {
+                        Button("Open WesomeCloud in Finder", action: openFinder)
+                    }
+                    if status == .notRegistered {
+                        Button("Retry Finder Setup", action: retrySetup)
+                    } else {
+                        Button("Check Again", action: checkAgain)
+                    }
+                    if isChecking { ProgressView().controlSize(.small) }
+                }
+                .disabled(isChecking)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var title: String {
+        guard hasSelections else { return "Choose your Spaces" }
+        switch status {
+        case .checking: return "Checking Finder setup"
+        case .notRegistered: return "Finder location is not registered"
+        case .activationRequired: return "Activate WesomeCloud in Finder"
+        case .disconnected: return "Finder is disconnected"
+        case .enabled: return "Enabled in Finder"
+        case .unavailable: return "Could not check Finder setup"
+        }
+    }
+
+    private var detail: String {
+        guard hasSelections else { return "Use Add to Finder below to choose a Space." }
+        switch status {
+        case .checking: return "Checking whether macOS has enabled WesomeCloud."
+        case .notRegistered: return "Your Spaces are selected, but macOS has no WesomeCloud location. Retry Finder Setup to register it again."
+        case .activationRequired: return "In Finder, select WesomeCloud under Locations and click Activate to start browsing your Spaces."
+        case .disconnected: return "Your account is connected, but Finder is disconnected. Open WesomeCloud in Finder for details."
+        case .enabled: return "Browse your selected Spaces in the WesomeCloud location. Files download when you open them."
+        case .unavailable(let message): return message
+        }
+    }
+}
+
 public struct AccountSetupView: View {
+    @Environment(\.dismiss) private var dismiss
     @Bindable private var form: AccountSetupFormModel
+    private let isSubmitting: Bool
+    private let errorMessage: String?
     private let submit: (AccountSetupInput) async -> Void
 
-    public init(form: AccountSetupFormModel, submit: @escaping (AccountSetupInput) async -> Void) {
+    public init(form: AccountSetupFormModel, isSubmitting: Bool = false, errorMessage: String? = nil, submit: @escaping (AccountSetupInput) async -> Void) {
         self.form = form
+        self.isSubmitting = isSubmitting
+        self.errorMessage = errorMessage
         self.submit = submit
     }
 
@@ -1280,16 +1396,24 @@ public struct AccountSetupView: View {
                 .font(.title3.weight(.semibold))
             Picker("Login method", selection: $form.mode) {
                 Text("App Password").tag(AccountSetupMode.appPassword)
-                Text("Browser OAuth").tag(AccountSetupMode.oauth)
+                Text("Browser sign-in").tag(AccountSetupMode.oauth)
             }
             .pickerStyle(.segmented)
+            .disabled(isSubmitting)
             TextField("https://cloud.example.com", text: $form.serverURLText)
                 .textFieldStyle(.roundedBorder)
+                .disabled(isSubmitting)
             if form.mode == .appPassword {
                 TextField("Username", text: $form.username)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(isSubmitting)
                 SecureField("App password", text: $form.appPassword)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(isSubmitting)
+            }
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
             }
             if let validationMessage = form.validationMessage {
                 Text(validationMessage)
@@ -1297,6 +1421,9 @@ public struct AccountSetupView: View {
                     .foregroundStyle(.red)
             }
             HStack {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isSubmitting)
                 Spacer()
                 Button {
                     Task {
@@ -1304,13 +1431,18 @@ public struct AccountSetupView: View {
                         await submit(input)
                     }
                 } label: {
-                    Label(form.mode == .oauth ? "Continue in Browser" : "Connect", systemImage: form.mode == .oauth ? "safari" : "checkmark.circle")
+                    if isSubmitting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label(form.mode == .oauth ? "Continue in Browser" : "Connect", systemImage: form.mode == .oauth ? "safari" : "checkmark.circle")
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!form.canSubmit)
+                .disabled(!form.canSubmit || isSubmitting)
             }
         }
         .padding(24)
+        .interactiveDismissDisabled(isSubmitting)
     }
 }
 
