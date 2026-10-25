@@ -598,3 +598,16 @@ func accountCredentialResolverDiscoversOAuthTokenEndpointBeforeRefreshing() asyn
     #expect(await exchanger.requestedConfiguration?.tokenEndpoint == URL(string: "https://id.example/oauth/token")!)
     #expect(await exchanger.requestedConfiguration?.tokenEndpointAuthMethod == .clientSecretPost)
 }
+
+@Test
+func oauthReconnectRejectsDifferentAccountWithoutReplacingSavedCredentials() async throws {
+    let credentials = MemoryCredentialStore()
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let original = Credential(accountID: account.id, username: "alice", secret: "old-refresh", kind: .oauthRefreshToken)
+    try await credentials.save(original)
+    let service = AccountSessionService(credentialStore: credentials, capabilitiesFetcher: StubCapabilitiesFetcher(capabilities: ServerCapabilities()))
+    await #expect(throws: WesomeCloudError.unsupported("Sign in with the same ownCloud account to reconnect its Finder files.")) {
+        try await service.reconnectOAuthAccount(account, authenticator: StubOAuthAuthenticator(tokenSet: OAuthTokenSet(username: "mallory", accessToken: "other-access", refreshToken: "other-refresh")))
+    }
+    #expect(try await credentials.credential(accountID: account.id) == original)
+}

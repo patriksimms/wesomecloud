@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WesomeCloudMacApp
+import WesomeCloudShared
 
 @main
 struct WesomeCloudApplication: App {
@@ -8,13 +9,14 @@ struct WesomeCloudApplication: App {
     @State private var backgroundTasks: BackgroundTaskSyncController?
     @State private var updatePresenter: (any SoftwareUpdatePresenting)?
     @State private var settingsRequestCount = 0
+    @State private var finderRecoveryRequestCount = 0
     @State private var startupError: String?
 
     var body: some Scene {
         WindowGroup {
             Group {
                 if let viewModel {
-                    WesomeCloudRootView(viewModel: viewModel, settingsRequestCount: settingsRequestCount)
+                    WesomeCloudRootView(viewModel: viewModel, settingsRequestCount: settingsRequestCount, finderRecoveryRequestCount: finderRecoveryRequestCount)
                 } else {
                     ContentUnavailableView(
                         "WesomeCloud could not start",
@@ -23,6 +25,11 @@ struct WesomeCloudApplication: App {
                     )
                     .frame(minWidth: 520, minHeight: 320)
                 }
+            }
+            .onOpenURL { url in
+                guard url == FinderRecovery.url else { return }
+                finderRecoveryRequestCount += 1
+                NSApp.activate(ignoringOtherApps: true)
             }
             .task {
                 guard viewModel == nil else { return }

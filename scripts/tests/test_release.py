@@ -47,7 +47,7 @@ class Versions(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 release.next_version("1.2.3", invalid)
 
-    def test_both_plists_change_together_and_keep_unrelated_metadata(self):
+    def test_all_plists_change_together_and_reject_mismatched_metadata(self):
         with tempfile.TemporaryDirectory() as directory, working_directory(directory):
             Path("AppHost").mkdir()
             for path in release.PLISTS:
@@ -56,11 +56,17 @@ class Versions(unittest.TestCase):
             self.assertEqual(release.metadata(), ("0.2.0", 6))
             for path in release.PLISTS:
                 self.assertEqual(plistlib.loads(Path(path).read_bytes())["Keep"], "unchanged")
-            data = plistlib.loads(Path(release.PLISTS[1]).read_bytes())
-            data["CFBundleVersion"] = "7"
-            Path(release.PLISTS[1]).write_bytes(plistlib.dumps(data))
-            with self.assertRaisesRegex(ValueError, "must match"):
-                release.metadata()
+            for path in release.PLISTS:
+                original = Path(path).read_bytes()
+                for key, value in (("CFBundleVersion", "7"), ("CFBundleShortVersionString", "0.3.0")):
+                    with self.subTest(path=path, key=key):
+                        data = plistlib.loads(original)
+                        data[key] = value
+                        Path(path).write_bytes(plistlib.dumps(data))
+                        with self.assertRaisesRegex(ValueError, "must match"):
+                            release.metadata()
+                        Path(path).write_bytes(original)
+
 
     def test_public_feed_cannot_be_downgraded(self):
         for data in (feed("0.1.5", 7), feed("0.1.4", 9)):

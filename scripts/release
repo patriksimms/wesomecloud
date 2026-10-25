@@ -17,7 +17,8 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-PLISTS = ("AppHost/Info.plist", "AppHost/WesomeFileProviderExtension-Info.plist")
+PLISTS = ("AppHost/Info.plist", "AppHost/WesomeFileProviderExtension-Info.plist",
+          "AppHost/WesomeFileProviderUIExtension-Info.plist")
 
 
 def run(*args, capture=False, input=None, env=None):
@@ -66,8 +67,8 @@ def metadata():
         if not re.fullmatch(r"[1-9]\d*", build):
             raise ValueError(f"{path} must have a positive integer build number.")
         values.append((version, int(build)))
-    if values[0] != values[1]:
-        raise ValueError("App and File Provider versions/build numbers must match.")
+    if len(set(values)) != 1:
+        raise ValueError("App, File Provider, and File Provider UI extension versions/build numbers must match.")
     return values[0]
 
 

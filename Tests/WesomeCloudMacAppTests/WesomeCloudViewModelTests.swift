@@ -165,7 +165,7 @@ private actor MacManualSyncRunner: ManualSyncRunning {
     var accountIDs: [UUID] = []
     var error: Error?
 
-    func set(error: Error) {
+    func set(error: Error?) {
         self.error = error
     }
 
@@ -1731,4 +1731,59 @@ func dashboardFileActionsUseTheFilesSpace() async throws {
     #expect(viewModel.lastErrorMessage == nil)
     let url = try #require(await transport.requests.first?.url)
     #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "space_ref" }?.value == "storage$HR!file")
+}
+
+private actor RecoveryCapabilitiesFetcher: CapabilitiesFetching {
+    private var errors: [String: Error] = [:]
+    private(set) var requestedHosts: [String] = []
+
+    func set(error: Error?, host: String) { errors[host] = error }
+
+    func fetchCapabilities(serverURL: URL, credentials: Credentials) async throws -> ServerCapabilities {
+        let host = serverURL.host()!
+        requestedHosts.append(host)
+        if let error = errors[host] { throw error }
+        return ServerCapabilities()
+    }
+}
+
+@Test(arguments: [false, true]) @MainActor
+func finderRecoveryChecksEachAccountEvenWhenSyncIsPaused(isPaused: Bool) async throws {
+    let paths = WesomeCloudPaths(root: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString))
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let health = FileProviderHealthStore(paths: paths)
+    let offline = Account(serverURL: URL(string: "https://offline.example/")!, username: "alice")
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "bob")
+    let records = [offline, account].map {
+        PersistedAccountRecord(account: $0, domain: CloudDomain(id: $0.id.uuidString, accountID: $0.id, displayName: $0.username))
+    }
+    let credentials = MemoryCredentialStore()
+    for user in [offline, account] {
+        try await credentials.save(Credential(accountID: user.id, username: user.username, secret: "secret", kind: .appPassword))
+    }
+    try await health.report(.authentication, accountID: account.id)
+    let capabilities = RecoveryCapabilitiesFetcher()
+    await capabilities.set(error: URLError(.notConnectedToInternet), host: "offline.example")
+    let signaler = MemoryFileProviderChangeSignaler()
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(credentialStore: credentials, capabilitiesFetcher: capabilities),
+        domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager(), changeSignaler: signaler),
+        repository: MemoryAccountRepository(records: records),
+        preferencesRepository: MemoryPreferencesRepository(preferences: AppPreferences(sync: SyncPreferences(isSyncPaused: isPaused))),
+        fileProviderHealth: health
+    )
+    let runner = MacManualSyncRunner()
+    await runner.set(error: URLError(.notConnectedToInternet))
+    let viewModel = WesomeCloudViewModel(model: model, manualSync: runner)
+
+    // Stale Finder health does not force a second login when credentials work.
+    #expect(await viewModel.recoverFinder() == nil)
+    #expect(await signaler.resolvedAuthenticationDomains == [account.id.uuidString])
+    await capabilities.set(error: KeychainError.status(-67701), host: "cloud.example")
+    #expect(await viewModel.recoverFinder() == nil)
+    await capabilities.set(error: WesomeCloudError.httpFailure(HTTPFailure(statusCode: 401, kind: .authentication)), host: "cloud.example")
+    #expect(await viewModel.recoverFinder()?.id == account.id)
+    #expect(await capabilities.requestedHosts == Array(repeating: ["offline.example", "cloud.example"], count: 3).flatMap { $0 })
+    #expect(await runner.accountIDs.isEmpty)
+    #expect(try await model.loadPreferences().sync.isSyncPaused == isPaused)
 }

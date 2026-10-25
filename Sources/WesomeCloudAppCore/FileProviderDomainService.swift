@@ -60,7 +60,9 @@ public extension FileProviderDomainManaging {
 
 public protocol FileProviderChangeSignaling: Sendable {
     func signalEnumerator(domainID: String, containerItemIdentifier: String) async throws
+    func signalAuthenticationResolved(domainID: String) async throws
 }
+
 
 public actor MemoryFileProviderDomainManager: FileProviderDomainManaging {
     private var registered: [String: CloudDomain] = [:]
@@ -81,6 +83,7 @@ public actor MemoryFileProviderDomainManager: FileProviderDomainManaging {
 }
 
 public actor MemoryFileProviderChangeSignaler: FileProviderChangeSignaling {
+    public private(set) var resolvedAuthenticationDomains: [String] = []
     public private(set) var signaledEnumerators: [(domainID: String, containerItemIdentifier: String)] = []
     public var error: Error?
 
@@ -95,6 +98,11 @@ public actor MemoryFileProviderChangeSignaler: FileProviderChangeSignaling {
             throw error
         }
         signaledEnumerators.append((domainID: domainID, containerItemIdentifier: containerItemIdentifier))
+    }
+
+    public func signalAuthenticationResolved(domainID: String) async throws {
+        if let error { throw error }
+        resolvedAuthenticationDomains.append(domainID)
     }
 }
 
@@ -159,6 +167,12 @@ public actor FileProviderDomainService {
         try await manager.remove(domainID: domain.id)
         try await repository?.deleteDomain(id: domain.id)
         await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Removed Finder location \(domain.displayName)"))
+    }
+
+    public func authenticationSucceeded(for selections: [CloudDomain]) async throws {
+        for domain in selections {
+            try await changeSignaler?.signalAuthenticationResolved(domainID: domain.id)
+        }
     }
 
     public func refreshSelections(_ selections: [CloudDomain]) async throws {
@@ -284,6 +298,14 @@ public final class SystemFileProviderDomainManager: FileProviderDomainManaging, 
 
 public final class SystemFileProviderChangeSignaler: FileProviderChangeSignaling, @unchecked Sendable {
     public init() {}
+
+    public func signalAuthenticationResolved(domainID: String) async throws {
+        let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(domainID), displayName: domainID)
+        guard let manager = NSFileProviderManager(for: domain) else {
+            throw WesomeCloudError.missingItem(domainID)
+        }
+        try await manager.signalErrorResolved(NSFileProviderError(.notAuthenticated))
+    }
 
     public func signalEnumerator(domainID: String, containerItemIdentifier: String) async throws {
         let domain = NSFileProviderDomain(

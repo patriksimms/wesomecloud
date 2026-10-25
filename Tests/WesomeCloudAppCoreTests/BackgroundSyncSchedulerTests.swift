@@ -20,7 +20,7 @@ private actor StubAccountSyncRunner: AccountSyncRunning {
         self.queueSummary = queueSummary
     }
 
-    func set(error: Error) {
+    func set(error: Error?) {
         self.error = error
     }
 
@@ -548,4 +548,21 @@ func schedulerPollsEachSelectedSpaceAndSignalsItsFinderLocation() async throws {
     }
     #expect(await runner.pollCount == 2)
     #expect(Set(await signaler.signaledEnumerators.map(\.domainID)) == ["AM", "HR"])
+}
+
+@Test
+func successfulPollRetriesFinderAuthenticationEvenWithoutRemoteChanges() async throws {
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let record = PersistedAccountRecord(account: account, domain: CloudDomain(id: "selected-space", accountID: account.id, displayName: "AM"))
+    let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()), domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()), repository: MemoryAccountRepository(records: [record]))
+    let runner = StubAccountSyncRunner()
+    let signaler = MemoryFileProviderChangeSignaler()
+    let scheduler = BackgroundSyncScheduler(runner: runner, appModel: model, changeSignaler: UnifiedFileProviderChangeSignaler(signaler: signaler))
+    await runner.set(error: WesomeCloudError.httpFailure(HTTPFailure(statusCode: 401, kind: .authentication)))
+    await #expect(throws: Error.self) { try await scheduler.runNow(for: record) }
+    #expect(await signaler.resolvedAuthenticationDomains.isEmpty)
+    await runner.set(error: nil)
+    let result = try await scheduler.runNow(for: record)
+    #expect(result.message == "Up to date")
+    #expect(await signaler.resolvedAuthenticationDomains == ["wesomecloud"])
 }

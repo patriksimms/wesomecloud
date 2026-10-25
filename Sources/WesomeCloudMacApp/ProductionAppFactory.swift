@@ -315,6 +315,7 @@ public struct ProductionAppFactory: Sendable {
             conflictResolver: conflictResolver,
             availabilityResolver: availabilityResolver,
             publicLinkCreator: publicLinkCreator,
+            fileProviderHealth: FileProviderHealthStore(paths: paths),
             diagnostics: diagnostics
         )
         return ProductionAppComponents(
