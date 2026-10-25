@@ -59,6 +59,20 @@ func extensionInfoPlistPointsAtShippedPrincipalClassAndMatchesAppVersion() throw
 }
 
 @Test
+func finderRecoveryExtensionAndURLSchemeArePackagedTogether() throws {
+    let appInfo = try plist("AppHost/Info.plist")
+    let recoveryInfo = try plist("AppHost/WesomeFileProviderUIExtension-Info.plist")
+    let extensionInfo = try #require(recoveryInfo["NSExtension"] as? NSDictionary)
+    #expect(extensionInfo["NSExtensionPointIdentifier"] as? String == "com.apple.fileprovider-actionsui")
+    #expect(extensionInfo["NSExtensionPrincipalClass"] as? String == "$(PRODUCT_MODULE_NAME).RecoveryViewController")
+    #expect(extensionInfo["NSExtensionFileProviderDocumentGroup"] as? String == "$(TeamIdentifierPrefix)cloud.wesome.wesomecloud")
+    #expect(recoveryInfo["CFBundleVersion"] as? String == appInfo["CFBundleVersion"] as? String)
+    #expect(recoveryInfo["CFBundleShortVersionString"] as? String == appInfo["CFBundleShortVersionString"] as? String)
+    let types = try #require(appInfo["CFBundleURLTypes"] as? [NSDictionary])
+    #expect(types.contains { ($0["CFBundleURLSchemes"] as? [String])?.contains("wesomecloud") == true })
+}
+
+@Test
 func appInfoPlistWiresSparkleToReleaseSettings() throws {
     let appInfo = try plist("AppHost/Info.plist")
 

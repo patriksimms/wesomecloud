@@ -164,6 +164,15 @@ public actor BackgroundSyncScheduler {
             if shouldPoll {
                 remoteChanges = try await runner.pollRemote(account: account)
                 state.lastPollAt = now
+                // A successful authenticated poll can release an old Finder sign-in error,
+                // even when no remote files changed. The extension verifies its own recovery.
+                if let domainID = account.domain?.id {
+                    do {
+                        try await changeSignaler?.signalAuthenticationResolved(domainID: domainID)
+                    } catch {
+                        await WesomeLogger(category: "FileProvider").error("Could not retry Finder authentication: \(error)")
+                    }
+                }
                 try await signalRemoteChanges(remoteChanges, for: account, occurredAt: now)
             }
             if shouldProcessQueue {

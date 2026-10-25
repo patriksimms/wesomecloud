@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleDisplayName</key>
+	<string>WesomeCloud Finder Recovery</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.3.0</string>
+	<key>CFBundleVersion</key>
+	<string>7</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>WesomeCloudAppGroupIdentifier</key>
+	<string>$(TeamIdentifierPrefix)cloud.wesome.wesomecloud</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.fileprovider-actionsui</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).RecoveryViewController</string>
+		<key>NSExtensionFileProviderDocumentGroup</key>
+		<string>$(TeamIdentifierPrefix)cloud.wesome.wesomecloud</string>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>NSExtensionFileProviderSupportsEnumeration</key>
+			<true/>
+		</dict>
+	</dict>
+</dict>
+</plist>

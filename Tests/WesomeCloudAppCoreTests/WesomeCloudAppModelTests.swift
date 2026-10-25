@@ -43,8 +43,9 @@ private actor ModelNotificationsFetcher: NotificationsFetching {
 }
 
 private struct ModelOAuthAuthenticator: OAuthAuthenticating {
+    var username = "oauth-user"
     func authenticate(serverURL _: URL) async throws -> OAuthTokenSet {
-        OAuthTokenSet(username: "oauth-user", accessToken: "access", refreshToken: "refresh")
+        OAuthTokenSet(username: username, accessToken: "access", refreshToken: "refresh")
     }
 }
 
@@ -241,8 +242,8 @@ func appModelReconnectsExistingAccountWithoutChangingIdentity() async throws {
     #expect(try await domainManager.domains() == [reconnected.domain])
 }
 
-@Test
-func appModelReconnectKeepsSyncedSpaceDomain() async throws {
+@Test(arguments: [false, true])
+func appModelReconnectKeepsSyncedSpaceDomain(usesOAuth: Bool) async throws {
     let credentials = MemoryCredentialStore()
     let accountService = AccountSessionService(credentialStore: credentials, capabilitiesFetcher: ModelCapabilitiesFetcher())
     let domainManager = MemoryFileProviderDomainManager()
@@ -263,7 +264,7 @@ func appModelReconnectKeepsSyncedSpaceDomain() async throws {
     )
     let synced = try await model.syncSpace(AppSpace(accountID: added.id, accountName: "alice", space: space))
 
-    let reconnected = try await model.reconnectAccount(accountID: added.id, appPassword: "new")
+    let reconnected = try await model.reconnectAccount(accountID: added.id, appPassword: "new", authenticator: usesOAuth ? ModelOAuthAuthenticator(username: "alice") : nil)
 
     #expect(reconnected.domains == synced.domains)
     #expect(try await domainManager.domains().map(\.displayName) == ["WesomeCloud"])

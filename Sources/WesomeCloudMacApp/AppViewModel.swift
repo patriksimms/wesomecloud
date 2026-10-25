@@ -427,13 +427,35 @@ public final class WesomeCloudViewModel {
         }
     }
 
-    public func reconnectAccount(_ accountID: UUID, appPassword: String) async {
+    public func usesOAuth(accountID: UUID) async -> Bool? {
+        do {
+            return try await model.credentialKind(accountID: accountID) == .oauthRefreshToken
+        } catch {
+            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return nil
+        }
+    }
+
+    public func recoverFinder() async -> PersistedAccountRecord? {
+        tracking.capture(.finderRecovery)
+        do {
+            let account = try await model.recoverFinder()
+            await refresh()
+            return account
+        } catch {
+            await refresh()
+            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return nil
+        }
+    }
+
+    public func reconnectAccount(_ accountID: UUID, appPassword: String, authenticator: OAuthAuthenticating? = nil) async {
         let trackingSession = tracking.sessionID
         tracking.capture(.reconnectAccount)
         isLoading = true
         defer { isLoading = false }
         do {
-            _ = try await model.reconnectAccount(accountID: accountID, appPassword: appPassword)
+            _ = try await model.reconnectAccount(accountID: accountID, appPassword: appPassword, authenticator: authenticator)
             let snapshot = try await model.loadSnapshot()
             accounts = snapshot.accounts
             spaces = snapshot.spaces

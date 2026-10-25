@@ -60,8 +60,8 @@ public struct ProductionExtensionRuntimeFactory: Sendable {
         )
     }
 
-    public func makeRuntime(configuration: ExtensionRuntimeAccountConfiguration, credentials: Credentials) throws -> FileProviderExtensionRuntime {
-        let coordinator = try makeCoordinator(configuration: configuration, credentials: credentials)
+    public func makeRuntime(configuration: ExtensionRuntimeAccountConfiguration, credentials: Credentials, health: FileProviderHealthStore? = nil) throws -> FileProviderExtensionRuntime {
+        let coordinator = try makeCoordinator(configuration: configuration, credentials: credentials, health: health)
         let store = try SQLiteMetadataStore(databaseURL: paths.database)
         return FileProviderExtensionRuntime(
             adapter: FileProviderAdapter(
@@ -76,13 +76,13 @@ public struct ProductionExtensionRuntimeFactory: Sendable {
         try makeCoordinator(configuration: configuration, credentials: Self.credentials(from: configuration.credential))
     }
 
-    public func makeCoordinator(configuration: ExtensionRuntimeAccountConfiguration, credentials: Credentials) throws -> FileProviderCoordinator {
+    public func makeCoordinator(configuration: ExtensionRuntimeAccountConfiguration, credentials: Credentials, health: FileProviderHealthStore? = nil) throws -> FileProviderCoordinator {
         try paths.ensureDirectories()
         let store = try SQLiteMetadataStore(databaseURL: paths.database)
         let webDAV = WebDAVClient(
             baseURL: Self.webDAVBaseURL(account: configuration.account, webDAVRootURL: configuration.webDAVRootURL),
             credentials: credentials,
-            transport: transport
+            transport: health.map { FileProviderHealthTransport(transport: transport, health: $0, accountID: configuration.account.id) as any HTTPTransport } ?? transport
         )
         let coordinator = FileProviderCoordinator(
             account: configuration.account,
@@ -190,21 +190,26 @@ public actor ProductionDomainRuntimeResolver {
     private let preferences: PreferencesRepository
     private let factory: ProductionExtensionRuntimeFactory
     private let credentialResolver: AccountCredentialResolver
-    private var accountCredentials: [UUID: (account: Account, credential: Credential, resolution: Task<ResolvedAccountCredentials, Error>)] = [:]
-    private var spaceCoordinators: [String: (configuration: ExtensionRuntimeAccountConfiguration, coordinator: FileProviderCoordinator)] = [:]
+    private let health: FileProviderHealthStore
+    private let clock: @Sendable () -> Date
+    private var accountCredentials: [UUID: (account: Account, credential: Credential, resolution: Task<ResolvedAccountCredentials, Error>, startedAt: Date)] = [:]
+    private var spaceCoordinators: [String: (configuration: ExtensionRuntimeAccountConfiguration, credentials: Credentials, coordinator: FileProviderCoordinator)] = [:]
 
     public init(
         accounts: AccountRepository,
         credentials: CredentialStore,
         preferences: PreferencesRepository = MemoryPreferencesRepository(),
         factory: ProductionExtensionRuntimeFactory = ProductionExtensionRuntimeFactory(),
-        credentialResolver: AccountCredentialResolver = AccountCredentialResolver()
+        credentialResolver: AccountCredentialResolver = AccountCredentialResolver(),
+        clock: @escaping @Sendable () -> Date = Date.init
     ) {
         self.accounts = accounts
         self.credentials = credentials
         self.preferences = preferences
         self.factory = factory
         self.credentialResolver = credentialResolver
+        self.health = FileProviderHealthStore(paths: factory.paths)
+        self.clock = clock
     }
 
     public static func production(paths: WesomeCloudPaths = .resolve()) throws -> ProductionDomainRuntimeResolver {
@@ -227,9 +232,7 @@ public actor ProductionDomainRuntimeResolver {
             throw WesomeCloudError.missingItem(domainID)
         }
         let record = account.selecting(domain)
-        guard let credential = try await credentials.credential(accountID: record.account.id) else {
-            throw WesomeCloudError.unsupported("Missing credential for account \(record.account.id.uuidString)")
-        }
+        let credential = try await loadCredential(accountID: record.account.id)
         return DomainRuntimeResolution(record: record, credential: credential)
     }
 
@@ -250,19 +253,37 @@ public actor ProductionDomainRuntimeResolver {
 
     // All spaces in an account share one token exchange, including concurrent requests.
     private func resolvedCredentials(account: Account, credential: Credential) async throws -> ResolvedAccountCredentials {
+        // Read shared health before selecting the cache entry: this await can admit
+        // another request that has already started the recovery refresh.
+        let issue: FileProviderAccountIssue?
+        do {
+            issue = try await health.issue(accountID: account.id)
+        } catch {
+            await WesomeLogger(category: "FileProvider").warning("Could not read advisory Finder health: \(error)")
+            issue = nil
+        }
         let resolution: Task<ResolvedAccountCredentials, Error>
-        if let cached = accountCredentials[account.id], cached.account == account, cached.credential == credential {
+        let startedAt: Date
+        if let cached = accountCredentials[account.id], cached.account == account, cached.credential == credential,
+           issue.map({ $0.reason != .authentication || $0.occurredAt <= cached.startedAt }) ?? true {
+            let resolved = try await cached.resolution.value
+            if let expiry = resolved.expiresAt, expiry <= clock().addingTimeInterval(30) {
+                accountCredentials[account.id] = nil
+                return try await resolvedCredentials(account: account, credential: credential)
+            }
             resolution = cached.resolution
+            startedAt = cached.startedAt
         } else {
             let resolver = credentialResolver
+            startedAt = clock()
             resolution = Task { try await resolver.resolve(account: account, credential: credential) }
-            accountCredentials[account.id] = (account, credential, resolution)
+            accountCredentials[account.id] = (account, credential, resolution, startedAt)
         }
         do {
             let resolved = try await resolution.value
             if let updated = resolved.updatedCredential {
                 try await credentials.save(updated)
-                accountCredentials[account.id] = (account, updated, resolution)
+                accountCredentials[account.id] = (account, updated, resolution, startedAt)
             }
             return resolved
         } catch {
@@ -272,9 +293,7 @@ public actor ProductionDomainRuntimeResolver {
     }
 
     private func coordinator(for record: PersistedAccountRecord) async throws -> FileProviderCoordinator {
-        guard let credential = try await credentials.credential(accountID: record.id) else {
-            throw WesomeCloudError.unsupported("Missing credential for account \(record.id.uuidString)")
-        }
+        let credential = try await loadCredential(accountID: record.id)
         let preferences = try await preferences.load()
         var configuration = ExtensionRuntimeAccountConfiguration(
             account: record.account, credential: credential, metadataID: record.metadataID,
@@ -282,13 +301,19 @@ public actor ProductionDomainRuntimeResolver {
             syncPreferences: preferences.sync, filePreferences: preferences.files
         )
         guard let key = record.domain?.id else { throw WesomeCloudError.missingItem(record.id.uuidString) }
-        if let cached = spaceCoordinators[key], cached.configuration == configuration {
+        let resolved: ResolvedAccountCredentials
+        do {
+            resolved = try await resolvedCredentials(account: record.account, credential: credential)
+        } catch {
+            await reportCredentialFailure(error, accountID: record.id)
+            throw error
+        }
+        if let updatedCredential = resolved.updatedCredential { configuration.credential = updatedCredential }
+        if let cached = spaceCoordinators[key], cached.configuration == configuration, cached.credentials == resolved.credentials {
             return cached.coordinator
         }
-        let resolved = try await resolvedCredentials(account: record.account, credential: credential)
-        if let updatedCredential = resolved.updatedCredential { configuration.credential = updatedCredential }
-        let coordinator = try factory.makeCoordinator(configuration: configuration, credentials: resolved.credentials)
-        spaceCoordinators[key] = (configuration, coordinator)
+        let coordinator = try factory.makeCoordinator(configuration: configuration, credentials: resolved.credentials, health: health)
+        spaceCoordinators[key] = (configuration, resolved.credentials, coordinator)
         return coordinator
     }
 
@@ -316,7 +341,13 @@ public actor ProductionDomainRuntimeResolver {
         }
         let resolution = try await resolve(domainID: domainID)
         let preferences = try await preferences.load()
-        let resolved = try await credentialResolver.resolve(account: resolution.record.account, credential: resolution.credential)
+        let resolved: ResolvedAccountCredentials
+        do {
+            resolved = try await credentialResolver.resolve(account: resolution.record.account, credential: resolution.credential)
+        } catch {
+            await reportCredentialFailure(error, accountID: resolution.record.id)
+            throw error
+        }
         if let updatedCredential = resolved.updatedCredential {
             try await credentials.save(updatedCredential)
         }
@@ -335,7 +366,33 @@ public actor ProductionDomainRuntimeResolver {
                 syncPreferences: preferences.sync,
                 filePreferences: preferences.files
             ),
-            credentials: resolved.credentials
+            credentials: resolved.credentials,
+            health: health
         )
+    }
+
+    private func loadCredential(accountID: UUID) async throws -> Credential {
+        do {
+            guard let credential = try await credentials.credential(accountID: accountID) else {
+                try await health.report(.authentication, accountID: accountID)
+                throw WesomeCloudError.unsupported("Missing credential for account \(accountID.uuidString)")
+            }
+            return credential
+        } catch {
+            await reportCredentialFailure(error, accountID: accountID)
+            throw error
+        }
+    }
+
+    private func reportCredentialFailure(_ error: Error, accountID: UUID) async {
+        do {
+            if case KeychainError.status(let status) = error {
+                try await health.report(.keychain(status), accountID: accountID)
+            } else if case WesomeCloudError.httpFailure(let failure) = error, failure.kind == .authentication {
+                try await health.report(.authentication, accountID: accountID)
+            }
+        } catch {
+            await WesomeLogger(category: "FileProvider").error("Could not save Finder credential failure: \(error)")
+        }
     }
 }

@@ -315,7 +315,7 @@ extension Error {
             return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
         }
         if self is KeychainError {
-            return .fileProvider(.notAuthenticated, underlying: self)
+            return .fileProvider(.cannotSynchronize, underlying: self)
         }
         guard let cloudError = self as? WesomeCloudError else {
             return (self as NSError).fileProviderCompatible

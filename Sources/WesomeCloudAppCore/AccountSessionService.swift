@@ -372,10 +372,12 @@ public struct OwnCloudOAuthTokenExchanger: OAuthTokenExchanging, OAuthRefreshTok
 public struct ResolvedAccountCredentials: Equatable, Sendable {
     public var credentials: Credentials
     public var updatedCredential: Credential?
+    public var expiresAt: Date?
 
-    public init(credentials: Credentials, updatedCredential: Credential? = nil) {
+    public init(credentials: Credentials, updatedCredential: Credential? = nil, expiresAt: Date? = nil) {
         self.credentials = credentials
         self.updatedCredential = updatedCredential
+        self.expiresAt = expiresAt
     }
 }
 
@@ -428,7 +430,8 @@ public struct AccountCredentialResolver: Sendable {
         )
         return ResolvedAccountCredentials(
             credentials: Credentials(accessToken: tokenSet.accessToken),
-            updatedCredential: updatedCredential == credential ? nil : updatedCredential
+            updatedCredential: updatedCredential == credential ? nil : updatedCredential,
+            expiresAt: tokenSet.expiresAt
         )
     }
 }
@@ -646,14 +649,34 @@ public actor AccountSessionService {
         return resolved.credentials
     }
 
+    public func validateCredentials(for account: Account) async throws {
+        let resolved = try await resolveCredentials(for: account)
+        _ = try await capabilitiesFetcher.fetchCapabilities(serverURL: account.serverURL, credentials: resolved)
+    }
+
+    public func credentialKind(accountID: UUID) async throws -> CredentialKind? {
+        try await credentialStore.credential(accountID: accountID)?.kind
+    }
+
+    public func reconnectOAuthAccount(_ account: Account, authenticator: OAuthAuthenticating) async throws -> AccountSession {
+        try await authenticateOAuth(serverURL: account.serverURL, authenticator: authenticator, existingAccount: account)
+    }
+
     public func addOAuthAccount(serverURL: URL, authenticator: OAuthAuthenticating) async throws -> AccountSession {
+        try await authenticateOAuth(serverURL: serverURL, authenticator: authenticator, existingAccount: nil)
+    }
+
+    private func authenticateOAuth(serverURL: URL, authenticator: OAuthAuthenticating, existingAccount: Account?) async throws -> AccountSession {
         let normalizedURL = serverURL.absoluteString.hasSuffix("/") ? serverURL : serverURL.appending(path: "")
         let tokenSet = try await authenticator.authenticate(serverURL: normalizedURL)
         let accessCredentials = Credentials(accessToken: tokenSet.accessToken)
         let username = tokenSet.username.isEmpty
             ? try await currentUserFetcher.fetchCurrentUserID(serverURL: normalizedURL, credentials: accessCredentials)
             : tokenSet.username
-        let account = Account(serverURL: normalizedURL, username: username)
+        if let existingAccount, username != existingAccount.username {
+            throw WesomeCloudError.unsupported("Sign in with the same ownCloud account to reconnect its Finder files.")
+        }
+        let account = existingAccount ?? Account(serverURL: normalizedURL, username: username)
         let capabilities = try await capabilitiesFetcher.fetchCapabilities(
             serverURL: normalizedURL,
             credentials: accessCredentials

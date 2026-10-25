@@ -53,6 +53,8 @@ targets:
         product: Sparkle
       - target: WesomeFileProviderExtensionHost
         embed: true
+      - target: WesomeFileProviderUIExtensionHost
+        embed: true
   WesomeFileProviderExtensionHost:
     type: app-extension
     platform: macOS
@@ -65,6 +67,28 @@ targets:
         PRODUCT_MODULE_NAME: WesomeFileProviderExtensionHost
         SWIFT_VERSION: "6.0"
         INFOPLIST_FILE: AppHost/WesomeFileProviderExtension-Info.plist
+      configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: AppHost/WesomeFileProviderExtension-Debug.entitlements
+        Release:
+          ARCHS: arm64
+          ENABLE_HARDENED_RUNTIME: YES
+          CODE_SIGN_ENTITLEMENTS: AppHost/WesomeFileProviderExtension.entitlements
+    dependencies:
+      - package: WesomeCloud
+        product: WesomeFileProviderExtension
+  WesomeFileProviderUIExtensionHost:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: AppHost/WesomeFileProviderUIExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cloud.wesome.wesomecloud.fileproviderui
+        PRODUCT_NAME: WesomeFileProviderUIExtension
+        PRODUCT_MODULE_NAME: WesomeFileProviderUIExtensionHost
+        SWIFT_VERSION: "6.0"
+        INFOPLIST_FILE: AppHost/WesomeFileProviderUIExtension-Info.plist
       configs:
         Debug:
           CODE_SIGN_ENTITLEMENTS: AppHost/WesomeFileProviderExtension-Debug.entitlements
