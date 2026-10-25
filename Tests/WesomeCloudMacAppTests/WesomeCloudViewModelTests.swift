@@ -2002,3 +2002,35 @@ func finderStatusRecoversFromSnapshotUpdatesWithoutPreferencesOrExplicitRefresh(
     #expect(viewModel.finderStatus == .enabled(location))
     #expect(viewModel.lastErrorMessage == nil)
 }
+
+@MainActor
+@Test(arguments: AccountSetupMode.allCases)
+func persistedAccountRemainsSuccessfulWhenPreferencesCannotLoad(mode: AccountSetupMode) async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let preferencesURL = directory.appending(path: "preferences.json")
+    try Data("invalid json".utf8).write(to: preferencesURL)
+    let repository = MemoryAccountRepository()
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore(), capabilitiesFetcher: MacAppCapabilitiesFetcher()),
+        domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+        repository: repository,
+        preferencesRepository: JSONPreferencesRepository(fileURL: preferencesURL)
+    )
+    let viewModel = WesomeCloudViewModel(model: model)
+    let succeeded: Bool
+    switch mode {
+    case .appPassword:
+        succeeded = await viewModel.addAccount(serverURL: URL(string: "https://cloud.example/")!, username: "alice", appPassword: "secret")
+    case .oauth:
+        succeeded = await viewModel.addOAuthAccount(serverURL: URL(string: "https://cloud.example/")!, authenticator: MacAppOAuthAuthenticator())
+    }
+
+    #expect(succeeded, "A saved account must dismiss setup even if its dashboard refresh fails")
+    let persisted = try await repository.records()
+    #expect(persisted.count == 1)
+    #expect(viewModel.accounts.map(\.id) == persisted.map(\.id))
+    #expect(viewModel.lastErrorMessage != nil)
+    #expect(!viewModel.isLoading)
+}

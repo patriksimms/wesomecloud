@@ -371,23 +371,8 @@ public final class WesomeCloudViewModel {
         isLoading = true
         defer { isLoading = false }
         do {
-            _ = try await model.addAccount(serverURL: serverURL, username: username, appPassword: appPassword)
-            let snapshot = try await model.loadSnapshot()
-            accounts = snapshot.accounts
-            spaces = snapshot.spaces
-            notifications = snapshot.notifications
-            files = snapshot.files
-            diagnostics = snapshot.diagnostics
-            issues = snapshot.issues
-            conflicts = snapshot.conflicts
-            transfers = snapshot.transfers
-            storage = snapshot.storage
-            publicLinks = snapshot.publicLinks
-            updateStatus = snapshot.updateStatus
-            lastCreatedShare = snapshot.lastCreatedShare
-            await refreshFinderStatus()
-            preferences = try await model.loadPreferences()
-            lastErrorMessage = nil
+            let record = try await model.addAccount(serverURL: serverURL, username: username, appPassword: appPassword)
+            await refreshAfterConnecting(record, trackingSession: trackingSession)
             return true
         } catch {
             tracking.captureError(error, operation: .addAccount, sessionID: trackingSession)
@@ -404,7 +389,20 @@ public final class WesomeCloudViewModel {
         isLoading = true
         defer { isLoading = false }
         do {
-            _ = try await model.addOAuthAccount(serverURL: serverURL, authenticator: authenticator)
+            let record = try await model.addOAuthAccount(serverURL: serverURL, authenticator: authenticator)
+            await refreshAfterConnecting(record, trackingSession: trackingSession)
+            return true
+        } catch {
+            tracking.captureError(error, operation: .addOAuthAccount, sessionID: trackingSession)
+            lastErrorMessage = UserFacingErrorFormatter.message(for: error)
+            return false
+        }
+    }
+
+    // Creation already succeeded. A dashboard failure must not invite another sign-in.
+    private func refreshAfterConnecting(_ record: PersistedAccountRecord, trackingSession: UUID?) async {
+        accounts.append(record)
+        do {
             let snapshot = try await model.loadSnapshot()
             accounts = snapshot.accounts
             spaces = snapshot.spaces
@@ -421,11 +419,11 @@ public final class WesomeCloudViewModel {
             await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            return true
         } catch {
-            tracking.captureError(error, operation: .addOAuthAccount, sessionID: trackingSession)
+            tracking.captureError(error, operation: .refresh, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
-            return false
+            // A failed snapshot may have skipped the newly added account's Finder check.
+            if finderStatus == .checking { await refreshFinderStatus() }
         }
     }
 
