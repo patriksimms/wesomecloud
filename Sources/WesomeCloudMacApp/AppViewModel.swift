@@ -279,9 +279,9 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            await refreshFinderStatus()
         } catch {
             tracking.captureError(error, operation: .refresh, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
@@ -354,9 +354,9 @@ public final class WesomeCloudViewModel {
             publicLinks = refreshed.publicLinks
             updateStatus = refreshed.updateStatus
             lastCreatedShare = refreshed.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            await refreshFinderStatus()
         } catch {
             tracking.captureError(error, operation: .syncNow, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
@@ -385,9 +385,9 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            await refreshFinderStatus()
             return true
         } catch {
             tracking.captureError(error, operation: .addAccount, sessionID: trackingSession)
@@ -418,9 +418,9 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            await refreshFinderStatus()
             return true
         } catch {
             tracking.captureError(error, operation: .addOAuthAccount, sessionID: trackingSession)
@@ -449,9 +449,9 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            await refreshFinderStatus()
         } catch {
             tracking.captureError(error, operation: .reconnectAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
@@ -479,9 +479,9 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            await refreshFinderStatus()
         } catch {
             tracking.captureError(error, operation: .syncSpace, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
@@ -509,9 +509,9 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            await refreshFinderStatus()
         } catch {
             tracking.captureError(error, operation: .removeSpace, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
@@ -561,9 +561,9 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             preferences = try await model.loadPreferences()
             lastErrorMessage = nil
-            await refreshFinderStatus()
         } catch {
             tracking.captureError(error, operation: .removeAccount, sessionID: trackingSession)
             lastErrorMessage = UserFacingErrorFormatter.message(for: error)
@@ -672,6 +672,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .clearIssue, sessionID: trackingSession)
@@ -699,6 +700,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .resolveConflict, sessionID: trackingSession)
@@ -748,6 +750,7 @@ public final class WesomeCloudViewModel {
             publicLinks = snapshot.publicLinks
             updateStatus = snapshot.updateStatus
             lastCreatedShare = snapshot.lastCreatedShare
+            await refreshFinderStatus()
             lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .setAvailabilityIntent, sessionID: trackingSession)
