@@ -171,6 +171,7 @@ public final class WesomeCloudViewModel {
     private var isSavingPreferences = false
     private var trackingConsentSaveWaiter: CheckedContinuation<Void, Never>?
     private var isInitializingTracking = false
+    private var finderRefreshRequested = false
 
     public init(
         model: WesomeCloudAppModel,
@@ -288,11 +289,15 @@ public final class WesomeCloudViewModel {
     }
 
     public func refreshFinderStatus() async {
-        guard !isCheckingFinder else { return }
+        guard !isCheckingFinder else {
+            finderRefreshRequested = true
+            return
+        }
         isCheckingFinder = true
         let trackingSession = tracking.sessionID
         defer { isCheckingFinder = false }
         while true {
+            finderRefreshRequested = false
             let selections = accounts.flatMap(\.domains)
             guard !selections.isEmpty else {
                 finderStatus = .notRegistered
@@ -300,11 +305,11 @@ public final class WesomeCloudViewModel {
             }
             do {
                 let status = try await finderIntegration.status()
-                // Recheck if selections changed while macOS was responding.
-                guard selections == accounts.flatMap(\.domains) else { continue }
+                // A retry after registration or activation needs a fresh system result.
+                guard !finderRefreshRequested, selections == accounts.flatMap(\.domains) else { continue }
                 finderStatus = status
             } catch {
-                guard selections == accounts.flatMap(\.domains) else { continue }
+                guard !finderRefreshRequested, selections == accounts.flatMap(\.domains) else { continue }
                 tracking.captureError(error, operation: .checkFinderStatus, sessionID: trackingSession)
                 finderStatus = .unavailable(UserFacingErrorFormatter.message(for: error))
             }

@@ -1875,3 +1875,76 @@ func repeatedSignInDoesNotDismissPendingAttempt(mode: AccountSetupMode) async {
     #expect(viewModel.lastErrorMessage != nil)
     #expect(!viewModel.isLoading)
 }
+
+private actor DelayedFinderIntegration: FinderIntegrationChecking {
+    let domains: MemoryFileProviderDomainManager
+    let location = URL(fileURLWithPath: "/preview/CloudStorage/WesomeCloud")
+    private var delayNextCheck = false
+    private var failDelayedCheck = false
+    private var responseWaiter: CheckedContinuation<Void, Never>?
+    private var startedWaiter: CheckedContinuation<Void, Never>?
+
+    init(domains: MemoryFileProviderDomainManager) {
+        self.domains = domains
+    }
+
+    func delayNextCheck(failing: Bool) {
+        delayNextCheck = true
+        failDelayedCheck = failing
+    }
+
+    func waitForDelayedCheck() async {
+        if responseWaiter != nil { return }
+        await withCheckedContinuation { startedWaiter = $0 }
+    }
+
+    func releaseDelayedCheck() {
+        responseWaiter?.resume()
+        responseWaiter = nil
+    }
+
+    func status() async throws -> FinderIntegrationStatus {
+        let registered = try await domains.domains().contains { $0.id == UnifiedFileProviderDomainManager.domain.id }
+        let snapshot: FinderIntegrationStatus = registered ? .enabled(location) : .notRegistered
+        if delayNextCheck {
+            delayNextCheck = false
+            let failing = failDelayedCheck
+            await withCheckedContinuation {
+                responseWaiter = $0
+                startedWaiter?.resume()
+                startedWaiter = nil
+            }
+            if failing { throw URLError(.cannotConnectToHost) }
+        }
+        return snapshot
+    }
+}
+
+@MainActor
+@Test(arguments: [false, true])
+func finderRetryDiscardsStatusCapturedBeforeRegistration(staleError: Bool) async throws {
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let selection = CloudDomain(id: "selected-space", accountID: account.id, displayName: "AM")
+    let domains = MemoryFileProviderDomainManager()
+    let finder = DelayedFinderIntegration(domains: domains)
+    let model = WesomeCloudAppModel(
+        accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
+        domains: FileProviderDomainService(manager: UnifiedFileProviderDomainManager(manager: domains)),
+        repository: MemoryAccountRepository(records: [PersistedAccountRecord(account: account, domain: selection)])
+    )
+    let viewModel = WesomeCloudViewModel(model: model, finderIntegration: finder)
+    await viewModel.refresh()
+    #expect(viewModel.finderStatus == .notRegistered)
+
+    await finder.delayNextCheck(failing: staleError)
+    let previousCheck = Task { await viewModel.refreshFinderStatus() }
+    await finder.waitForDelayedCheck()
+    await viewModel.retryFinderSetup()
+    #expect(try await domains.domains().map(\.id) == [UnifiedFileProviderDomainManager.domain.id])
+    #expect(viewModel.accounts.first?.domains == [selection])
+
+    await finder.releaseDelayedCheck()
+    await previousCheck.value
+    #expect(viewModel.finderStatus == .enabled(finder.location))
+    #expect(!viewModel.isCheckingFinder)
+}
