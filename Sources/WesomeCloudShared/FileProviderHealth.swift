@@ -38,6 +38,9 @@ public actor FileProviderHealthStore {
             return try JSONDecoder().decode(FileProviderAccountIssue.self, from: Data(contentsOf: file(accountID)))
         } catch CocoaError.fileReadNoSuchFile {
             return nil
+        } catch is DecodingError {
+            // Advisory data from a different app/extension version must not block credentials.
+            return nil
         }
     }
 

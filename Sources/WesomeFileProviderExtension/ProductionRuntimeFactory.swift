@@ -192,7 +192,7 @@ public actor ProductionDomainRuntimeResolver {
     private let credentialResolver: AccountCredentialResolver
     private let health: FileProviderHealthStore
     private let clock: @Sendable () -> Date
-    private var accountCredentials: [UUID: (account: Account, credential: Credential, resolution: Task<ResolvedAccountCredentials, Error>)] = [:]
+    private var accountCredentials: [UUID: (account: Account, credential: Credential, resolution: Task<ResolvedAccountCredentials, Error>, startedAt: Date)] = [:]
     private var spaceCoordinators: [String: (configuration: ExtensionRuntimeAccountConfiguration, credentials: Credentials, coordinator: FileProviderCoordinator)] = [:]
 
     public init(
@@ -253,25 +253,31 @@ public actor ProductionDomainRuntimeResolver {
 
     // All spaces in an account share one token exchange, including concurrent requests.
     private func resolvedCredentials(account: Account, credential: Credential) async throws -> ResolvedAccountCredentials {
+        // Read shared health before selecting the cache entry: this await can admit
+        // another request that has already started the recovery refresh.
+        let issue = try await health.issue(accountID: account.id)
         let resolution: Task<ResolvedAccountCredentials, Error>
+        let startedAt: Date
         if let cached = accountCredentials[account.id], cached.account == account, cached.credential == credential,
-           try await health.issue(accountID: account.id)?.reason != .authentication {
+           issue.map({ $0.reason != .authentication || $0.occurredAt <= cached.startedAt }) ?? true {
             let resolved = try await cached.resolution.value
             if let expiry = resolved.expiresAt, expiry <= clock().addingTimeInterval(30) {
                 accountCredentials[account.id] = nil
                 return try await resolvedCredentials(account: account, credential: credential)
             }
             resolution = cached.resolution
+            startedAt = cached.startedAt
         } else {
             let resolver = credentialResolver
+            startedAt = clock()
             resolution = Task { try await resolver.resolve(account: account, credential: credential) }
-            accountCredentials[account.id] = (account, credential, resolution)
+            accountCredentials[account.id] = (account, credential, resolution, startedAt)
         }
         do {
             let resolved = try await resolution.value
             if let updated = resolved.updatedCredential {
                 try await credentials.save(updated)
-                accountCredentials[account.id] = (account, updated, resolution)
+                accountCredentials[account.id] = (account, updated, resolution, startedAt)
             }
             return resolved
         } catch {
@@ -329,7 +335,13 @@ public actor ProductionDomainRuntimeResolver {
         }
         let resolution = try await resolve(domainID: domainID)
         let preferences = try await preferences.load()
-        let resolved = try await credentialResolver.resolve(account: resolution.record.account, credential: resolution.credential)
+        let resolved: ResolvedAccountCredentials
+        do {
+            resolved = try await credentialResolver.resolve(account: resolution.record.account, credential: resolution.credential)
+        } catch {
+            await reportCredentialFailure(error, accountID: resolution.record.id)
+            throw error
+        }
         if let updatedCredential = resolved.updatedCredential {
             try await credentials.save(updatedCredential)
         }

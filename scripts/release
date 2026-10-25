@@ -67,8 +67,8 @@ def metadata():
         if not re.fullmatch(r"[1-9]\d*", build):
             raise ValueError(f"{path} must have a positive integer build number.")
         values.append((version, int(build)))
-    if values[0] != values[1]:
-        raise ValueError("App and File Provider versions/build numbers must match.")
+    if len(set(values)) != 1:
+        raise ValueError("App, File Provider, and File Provider UI extension versions/build numbers must match.")
     return values[0]
 
 
