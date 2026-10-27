@@ -16,7 +16,7 @@ let package = Package(
         .executable(name: "wesomecloud", targets: ["WesomeCloudApp"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.1"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.1"),
     ],
     targets: [
         .target(name: "WesomeCloudShared"),
