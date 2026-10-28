@@ -62,6 +62,10 @@ func diagnosticJournalExpiresOldSegmentsAndBoundsDiskUsage() throws {
     "Error Domain=Test UserInfo={NSFilePath=\"Client Report.xlsx\"}",
     "The file “Client Report.xlsx” couldn’t be opened.",
     "The file “Client Report.xlsx",
+    "The file “old.txt” could not replace “Acme payroll.xlsx",
+    "The file \"old.txt\" could not replace \"Acme payroll.xlsx",
+    "The file “private\nClient Report.xlsx” couldn’t be opened.",
+    "Die Datei „old.txt“ konnte „Acme payroll.xlsx nicht ersetzen",
     "Die Datei „Client Report.xlsx",
     "Die Datei „Client Report.xlsx“ konnte nicht geöffnet werden.",
     "The file “Client “private” Report.xlsx” couldn’t be opened.",
@@ -69,6 +73,6 @@ func diagnosticJournalExpiresOldSegmentsAndBoundsDiskUsage() throws {
 ])
 func diagnosticRedactionRemovesPrivateValues(_ message: String) {
     let redacted = DiagnosticRedactor.redact(message)
-    for value in ["abc", "private", "Client Report", "example.test"] { #expect(!redacted.contains(value)) }
+    for value in ["abc", "private", "Client Report", "Acme payroll", "example.test"] { #expect(!redacted.contains(value)) }
     #expect(DiagnosticRedactor.redact(redacted) == redacted)
 }

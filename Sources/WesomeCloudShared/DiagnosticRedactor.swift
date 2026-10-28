@@ -15,9 +15,9 @@ public enum DiagnosticRedactor {
         ] {
             result = result.replacingOccurrences(of: pattern, with: "[REDACTED]", options: .regularExpression)
         }
-        // Redact complete quote groups first, then any truncated localized quote to end of line.
-        // NSError descriptions may contain file names or paths with spaces.
-        for pattern in [#""(?:\\.|[^"\\\r\n])*""#, #"[“„][^\r\n]*[”“]"#, #"[“„][^\r\n]*"#, #"https?://[^\s<>\"\)]+"#, #"(?<!\w)/[^\r\n]*"#,
+        // Free-text errors may contain nested, repeated or truncated filename quotes.
+        // Keep the prefix and reference the whole remaining message rather than guessing its boundaries.
+        for pattern in [#"["“„][\s\S]*"#, #"https?://[^\s<>\"\)]+"#, #"(?<!\w)/[^\r\n]*"#,
                         #"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#] {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
             for match in regex.matches(in: result, range: NSRange(result.startIndex..., in: result)).reversed() {
