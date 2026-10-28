@@ -1400,17 +1400,16 @@ func domainRuntimeResolverReportsMissingCredential() async throws {
     }
 }
 
-private func waitUntil(
-    timeoutNanoseconds: UInt64 = 1_000_000_000,
-    condition: @escaping () async -> Bool
-) async throws {
-    let start = ContinuousClock.now
+private func waitUntil(condition: @escaping () async -> Bool) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    // These checks wait for state, not latency. Recheck after waking before timing out:
+    // a loaded CI runner can resume this task well after its requested sleep interval.
     while !(await condition()) {
-        try await Task.sleep(nanoseconds: 5_000_000)
-        if start.duration(to: .now) > .nanoseconds(Int64(timeoutNanoseconds)) {
+        guard ContinuousClock.now < deadline else {
             Issue.record("Timed out waiting for condition")
             return
         }
+        try await Task.sleep(for: .milliseconds(5))
     }
 }
 
