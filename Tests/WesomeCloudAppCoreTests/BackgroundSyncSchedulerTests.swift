@@ -458,7 +458,7 @@ func schedulerRunNowForcesPollingAndQueueWorkBeforeIntervalsElapsed() async thro
 
     #expect(forced.polledRemote)
     #expect(forced.processedQueue)
-    #expect(forced.message == "Up to date")
+    #expect(forced.message == "No changes detected")
     #expect(await runner.pollCount == 2)
     #expect(await runner.queueCount == 2)
 }
@@ -563,6 +563,35 @@ func successfulPollRetriesFinderAuthenticationEvenWithoutRemoteChanges() async t
     #expect(await signaler.resolvedAuthenticationDomains.isEmpty)
     await runner.set(error: nil)
     let result = try await scheduler.runNow(for: record)
-    #expect(result.message == "Up to date")
+    #expect(result.message == "No changes detected")
     #expect(await signaler.resolvedAuthenticationDomains == ["wesomecloud"])
+}
+
+@Test
+func syncDiagnosticsCorrelateFailureAndRecoveryWithTriggerAndCheckedScope() async throws {
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let record = PersistedAccountRecord(account: account)
+    let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()), domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()), repository: MemoryAccountRepository(records: [record]))
+    let sink = MemoryDiagnosticSink()
+    let runner = StubAccountSyncRunner()
+    let scheduler = BackgroundSyncScheduler(runner: runner, appModel: model, diagnostics: sink)
+    await runner.set(error: WesomeCloudError.httpFailure(HTTPFailure(statusCode: 503, kind: .unavailable)))
+    await #expect(throws: Error.self) { try await scheduler.runDueWork(for: record) }
+    await runner.set(error: nil)
+    var changes = RemoteChangeSet()
+    changes.checkedFolderCount = 4
+    changes.folderLimitReached = true
+    await runner.set(remoteChanges: changes)
+    let result = try await scheduler.runNow(for: record)
+    #expect(result.message == "Checked 4 folders (limit reached). No changes detected")
+    let events = await sink.events
+    let failure = try #require(events.first { $0.context?["outcome"] == "failed" })
+    let success = try #require(events.first { $0.category == "SyncRun" && $0.context?["outcome"] == "success" })
+    #expect(failure.context?["trigger"] == "scheduled")
+    #expect(success.context?["trigger"] == "manual")
+    #expect(success.context?["scope"] == record.metadataID.uuidString)
+    #expect(success.context?["folders"] == "4")
+    #expect(success.context?["polled"] == "true")
+    #expect(failure.context?["run"] != success.context?["run"])
+    #expect(events.contains { $0.category == "RemotePoll" && $0.context?["run"] == success.context?["run"] })
 }

@@ -167,7 +167,7 @@ func appModelAddsAccountRegistersDomainAndPersistsRecord() async throws {
 
     let snapshot = try await model.loadSnapshot()
     #expect(snapshot.accounts == [record])
-    #expect(snapshot.diagnostics.contains { $0.category == "App" && $0.message == "Account alice is ready" })
+    #expect(snapshot.diagnostics.contains { $0.category == "App" && $0.message == "Account \(DiagnosticRedactor.reference("alice")) is ready" })
 }
 
 @Test
@@ -353,7 +353,7 @@ func appModelRecordsUserFacingSpaceLoadDiagnostics() async throws {
 
     #expect(snapshot.spaces.isEmpty)
     let event = try #require(await diagnostics.events().first { $0.category == "Spaces" })
-    #expect(event.message == "Spaces unavailable for alice: The server is temporarily unavailable. Try again later.")
+    #expect(event.message == "Spaces unavailable for \(DiagnosticRedactor.reference("alice")): The server is temporarily unavailable. Try again later.")
     #expect(event.message.contains("httpFailure") == false)
 }
 
@@ -419,7 +419,7 @@ func appModelRecordsUserFacingNotificationLoadDiagnostics() async throws {
 
     #expect(snapshot.notifications.isEmpty)
     let event = try #require(await diagnostics.events().first { $0.category == "Notifications" })
-    #expect(event.message == "Notifications unavailable for alice: The server quota is full.")
+    #expect(event.message == "Notifications unavailable for \(DiagnosticRedactor.reference("alice")): The server quota is full.")
     #expect(event.message.contains("quotaExceeded") == false)
 }
 
@@ -704,7 +704,7 @@ func appModelLoadsFilesAndUpdatesAvailabilityIntent() async throws {
     snapshot = try await model.loadSnapshot()
 
     #expect(snapshot.files.first { $0.item.remote.id == "file-1" }?.item.availabilityIntent == .alwaysLocal)
-    #expect(snapshot.diagnostics.contains { $0.category == "Files" && $0.message == "Set file-1 availability to alwaysLocal for 1 item" })
+    #expect(snapshot.diagnostics.contains { $0.category == "Files" && $0.message == "Set \(DiagnosticRedactor.reference("file-1")) availability to alwaysLocal for 1 item" })
 }
 
 @Test
@@ -739,7 +739,7 @@ func appModelDelegatesAvailabilityIntentToExecutableResolver() async throws {
     #expect(try await metadataStore.item(accountID: account.id, id: "folder-1")?.availabilityIntent == .onlineOnly)
     #expect(try await metadataStore.item(accountID: account.id, id: "file-1")?.availabilityIntent == .onlineOnly)
     let snapshot = try await model.loadSnapshot()
-    #expect(snapshot.diagnostics.contains { $0.category == "Files" && $0.message == "Set folder-1 availability to onlineOnly for 2 items" })
+    #expect(snapshot.diagnostics.contains { $0.category == "Files" && $0.message == "Set \(DiagnosticRedactor.reference("folder-1")) availability to onlineOnly for 2 items" })
 }
 
 @Test

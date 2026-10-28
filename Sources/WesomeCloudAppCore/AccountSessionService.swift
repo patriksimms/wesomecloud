@@ -612,7 +612,7 @@ public actor AccountSessionService {
             serverEdition: capabilities.edition,
             serverPollInterval: capabilities.remotePollInterval
         )
-        await diagnostics?.record(DiagnosticEvent(category: "Account", level: .info, message: "\(diagnosticVerb) account \(account.username)"))
+        await diagnostics?.record(DiagnosticEvent(category: "Account", level: .info, message: "\(diagnosticVerb) account \(DiagnosticRedactor.reference(account.username))"))
         return session
     }
 
@@ -696,7 +696,7 @@ public actor AccountSessionService {
             serverEdition: capabilities.edition,
             serverPollInterval: capabilities.remotePollInterval
         )
-        await diagnostics?.record(DiagnosticEvent(category: "Account", level: .info, message: "Added OAuth account \(username)"))
+        await diagnostics?.record(DiagnosticEvent(category: "Account", level: .info, message: "Added OAuth account \(DiagnosticRedactor.reference(username))"))
         return session
     }
 

@@ -51,6 +51,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
     private let runtimeBox: ExtensionRuntimeBox
     private let domainIdentifier: String?
     private let logger: WesomeLogger
+    private let diagnostics: (any DiagnosticSink)?
 
     public init(
         runtime: FileProviderExtensionRuntime? = nil,
@@ -65,6 +66,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         )
         self.domainIdentifier = domainIdentifier
         self.logger = WesomeLogger(category: "FileProvider", sink: diagnostics)
+        self.diagnostics = diagnostics
         super.init()
     }
 
@@ -76,7 +78,8 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         self.init(
             runtime: nil,
             domainIdentifier: domainIdentifier,
-            runtimeResolver: productionResolver
+            runtimeResolver: productionResolver,
+            diagnostics: PersistentDiagnosticLog(directory: WesomeCloudPaths.resolve().logs)
         )
     }
 
@@ -136,7 +139,8 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         }
         return WesomeFileProviderEnumerator(
             runtimeProvider: { try await self.runtimeBox.resolve() },
-            containerIdentifier: String(containerItemIdentifier.rawValue)
+            containerIdentifier: String(containerItemIdentifier.rawValue),
+            diagnostics: diagnostics
         )
     }
 
@@ -145,11 +149,11 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         let completion = ItemCompletionBox(completionHandler)
         let task = Task<Void, Never> {
             let itemID = String(identifier.rawValue)
-            await logger.info("item requested id=\(itemID)")
+            await logger.info("item requested id=\(DiagnosticRedactor.reference(itemID))")
             do {
                 let runtime = try await runtimeBox.resolve()
                 if identifier == .rootContainer {
-                    await logger.info("item completed id=\(itemID)")
+                    await logger.info("item completed id=\(DiagnosticRedactor.reference(itemID))")
                     var root = ProviderItem.root
                     if !runtime.allowsRootCreation { root.capabilities = [.enumerate] }
                     completion.call(WesomeFileProviderItem(item: root), nil)
@@ -157,12 +161,12 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                     let parentPath = await runtime.itemCache.parentPath(for: itemID)
                     let item = try await runtime.adapter.itemForIdentifier(itemID, parentPath: parentPath)
                     if let item { await runtime.itemCache.register(item, parentPath: parentPath) }
-                    await logger.info("item completed id=\(itemID)")
+                    await logger.info("item completed id=\(DiagnosticRedactor.reference(itemID))")
                     completion.call(item.map(WesomeFileProviderItem.init), item == nil ? WesomeFileProviderExtensionError.itemNotFound.asNSError : nil)
                 }
                 progress.completedUnitCount = 1
             } catch {
-                await logger.error("item failed id=\(itemID) error=\(String(describing: error))")
+                await logger.error("item failed id=\(DiagnosticRedactor.reference(itemID)) error=\(String(describing: error))")
                 completion.call(nil, error.asFileProviderNSError)
             }
         }
@@ -176,7 +180,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         let requestedVersion = requestedVersion.map(RequestedProviderVersion.init)
         let task = Task<Void, Never> {
             let itemID = String(itemIdentifier.rawValue)
-            await logger.info("fetchContents requested id=\(itemID)")
+            await logger.info("fetchContents requested id=\(DiagnosticRedactor.reference(itemID))")
             do {
                 let runtime = try await runtimeBox.resolve()
                 let parentPath = await runtime.itemCache.parentPath(for: itemID)
@@ -190,10 +194,10 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 let item = try await runtime.adapter.itemForIdentifier(itemID, parentPath: parentPath)
                 if let item { await runtime.itemCache.register(item, parentPath: parentPath) }
                 completion.call(url, item.map(WesomeFileProviderItem.init), nil)
-                await logger.info("fetchContents completed id=\(itemID)")
+                await logger.info("fetchContents completed id=\(DiagnosticRedactor.reference(itemID))")
                 progress.completedUnitCount = 1
             } catch {
-                await logger.error("fetchContents failed id=\(itemID) error=\(String(describing: error))")
+                await logger.error("fetchContents failed id=\(DiagnosticRedactor.reference(itemID)) error=\(String(describing: error))")
                 completion.call(nil, nil, error.asFileProviderNSError)
             }
         }
@@ -207,7 +211,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         let requestedVersion = RequestedProviderVersion(requestedVersion)
         let task = Task<Void, Never> {
             let itemID = String(itemIdentifier.rawValue)
-            await logger.info("fetchPartialContents requested id=\(itemID) range=\(requestedRange.location)..<\(requestedRange.location + requestedRange.length)")
+            await logger.info("fetchPartialContents requested id=\(DiagnosticRedactor.reference(itemID)) range=\(requestedRange.location)..<\(requestedRange.location + requestedRange.length)")
             do {
                 let runtime = try await runtimeBox.resolve()
                 let parentPath = await runtime.itemCache.parentPath(for: itemID)
@@ -225,10 +229,10 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 await runtime.itemCache.register(partial.item, parentPath: parentPath)
                 let range = NSRange(location: Int(partial.retrievedRange.offset), length: Int(partial.retrievedRange.length))
                 completion.call(partial.url, WesomeFileProviderItem(item: partial.item), range, [], nil)
-                await logger.info("fetchPartialContents completed id=\(itemID)")
+                await logger.info("fetchPartialContents completed id=\(DiagnosticRedactor.reference(itemID))")
                 progress.completedUnitCount = 1
             } catch {
-                await logger.error("fetchPartialContents failed id=\(itemID) error=\(String(describing: error))")
+                await logger.error("fetchPartialContents failed id=\(DiagnosticRedactor.reference(itemID)) error=\(String(describing: error))")
                 completion.call(nil, nil, requestedRange, [], error.asFileProviderNSError)
             }
         }
@@ -242,7 +246,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         let requestedVersion = requestedVersion.map(RequestedProviderVersion.init)
         let task = Task<Void, Never> {
             let itemID = String(itemIdentifier.rawValue)
-            await logger.info("fetchIncrementalContents requested id=\(itemID) existing=\(existingContents.lastPathComponent)")
+            await logger.info("fetchIncrementalContents requested id=\(DiagnosticRedactor.reference(itemID)) existing=\(existingContents.lastPathComponent)")
             do {
                 let runtime = try await runtimeBox.resolve()
                 let parentPath = await runtime.itemCache.parentPath(for: itemID)
@@ -257,7 +261,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 if existingVersion.exactlyMatches(current) {
                     await runtime.itemCache.register(current, parentPath: parentPath)
                     completion.call(existingContents, WesomeFileProviderItem(item: current), nil)
-                    await logger.info("fetchIncrementalContents reused existing id=\(itemID)")
+                    await logger.info("fetchIncrementalContents reused existing id=\(DiagnosticRedactor.reference(itemID))")
                     progress.completedUnitCount = 1
                     return
                 }
@@ -265,10 +269,10 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 let item = try await runtime.adapter.itemForIdentifier(itemID, parentPath: parentPath)
                 if let item { await runtime.itemCache.register(item, parentPath: parentPath) }
                 completion.call(url, item.map(WesomeFileProviderItem.init), nil)
-                await logger.info("fetchIncrementalContents completed id=\(itemID)")
+                await logger.info("fetchIncrementalContents completed id=\(DiagnosticRedactor.reference(itemID))")
                 progress.completedUnitCount = 1
             } catch {
-                await logger.error("fetchIncrementalContents failed id=\(itemID) error=\(String(describing: error))")
+                await logger.error("fetchIncrementalContents failed id=\(DiagnosticRedactor.reference(itemID)) error=\(String(describing: error))")
                 completion.call(nil, nil, error.asFileProviderNSError)
             }
         }
@@ -416,7 +420,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         let completion = MutationCompletionBox(completionHandler)
         let task = Task<Void, Never> {
             let itemID = String(item.itemIdentifier.rawValue)
-            await logger.info("modifyItem requested id=\(itemID)")
+            await logger.info("modifyItem requested id=\(DiagnosticRedactor.reference(itemID))")
             do {
                 let runtime = try await runtimeBox.resolve()
                 let providerItem: ProviderItem
@@ -434,7 +438,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                     try await runtime.adapter.deleteItem(itemID)
                     await runtime.itemCache.remove(id: itemID)
                     completion.call(nil, [], false, nil)
-                    await logger.info("modifyItem trashed id=\(itemID)")
+                    await logger.info("modifyItem trashed id=\(DiagnosticRedactor.reference(itemID))")
                     progress.completedUnitCount = 1
                     return
                 }
@@ -473,10 +477,10 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 }
                 await runtime.itemCache.register(providerItem, parentPath: registrationParentPath)
                 completion.call(WesomeFileProviderItem(item: providerItem), [], false, nil)
-                await logger.info("modifyItem completed id=\(itemID)")
+                await logger.info("modifyItem completed id=\(DiagnosticRedactor.reference(itemID))")
                 progress.completedUnitCount = 1
             } catch {
-                await logger.error("modifyItem failed id=\(itemID) error=\(String(describing: error))")
+                await logger.error("modifyItem failed id=\(DiagnosticRedactor.reference(itemID)) error=\(String(describing: error))")
                 completion.call(nil, [], false, error.asFileProviderNSError)
             }
         }
@@ -526,7 +530,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         let task = Task<Void, Never> {
             var resolvedRuntime: FileProviderExtensionRuntime?
             let itemID = String(identifier.rawValue)
-            await logger.info("deleteItem requested id=\(itemID)")
+            await logger.info("deleteItem requested id=\(DiagnosticRedactor.reference(itemID))")
             do {
                 let runtime = try await runtimeBox.resolve()
                 resolvedRuntime = runtime
@@ -543,7 +547,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 try await runtime.adapter.deleteItem(itemID)
                 await runtime.itemCache.remove(id: itemID)
                 completion.call(nil)
-                await logger.info("deleteItem completed id=\(itemID)")
+                await logger.info("deleteItem completed id=\(DiagnosticRedactor.reference(itemID))")
                 progress.completedUnitCount = 1
             } catch {
                 if Self.isAlreadyDeleted(error) {
@@ -551,11 +555,11 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                         await resolvedRuntime.itemCache.remove(id: itemID)
                     }
                     completion.call(nil)
-                    await logger.info("deleteItem already-deleted id=\(itemID)")
+                    await logger.info("deleteItem already-deleted id=\(DiagnosticRedactor.reference(itemID))")
                     progress.completedUnitCount = 1
                     return
                 }
-                await logger.error("deleteItem failed id=\(itemID) error=\(String(describing: error))")
+                await logger.error("deleteItem failed id=\(DiagnosticRedactor.reference(itemID)) error=\(String(describing: error))")
                 completion.call(error.asFileProviderNSError)
             }
         }

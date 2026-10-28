@@ -33,13 +33,15 @@ public struct ProductionAccountSyncRunner: AccountSyncRunning {
         var polledFolderPaths = Set([rootPath])
         var foldersToPoll = changes.changedFoldersToPoll
         var folderPollCount = 0
+        changes.checkedFolderCount = 1
         while let folder = foldersToPoll.first {
             foldersToPoll.removeFirst()
-            guard folderPollCount < Self.maximumChangedFolderPolls else { break }
+            guard folderPollCount < Self.maximumChangedFolderPolls else { changes.folderLimitReached = true; break }
             guard let stored = try await metadataStore.item(accountID: record.metadataID, id: folder.id) else { continue }
             let folderPath = stored.remote.path
             guard polledFolderPaths.insert(folderPath).inserted else { continue }
             folderPollCount += 1
+            changes.checkedFolderCount = (changes.checkedFolderCount ?? 0) + 1
             let nested = try await coordinator.pollRemoteChanges(parentID: folder.id, remotePath: folderPath)
             changes.merge(nested)
             foldersToPoll.append(contentsOf: nested.changedFoldersToPoll)

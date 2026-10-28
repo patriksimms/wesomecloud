@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import WesomeCloudAppCore
 import WesomeCloudShared
+import SyncStore
 
 @Test
 func diagnosticsExporterWritesRedactedBundle() async throws {
@@ -31,13 +32,13 @@ func diagnosticsExporterWritesRedactedBundle() async throws {
 
     let url = try exporter.export(snapshot: snapshot, preferences: AppPreferences(), to: directory)
 
-    #expect(url.lastPathComponent == "wesomecloud-diagnostics-123.json")
-    let data = try Data(contentsOf: url)
+    #expect(url.pathExtension == "zip")
+    let data = try diagnosticJSON(in: url)
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let bundle = try decoder.decode(DiagnosticsExportBundle.self, from: data)
     #expect(bundle.accounts.first?.serverHost == "cloud.example")
-    #expect(bundle.accounts.first?.username == "alice")
+    #expect(bundle.accounts.first?.username == DiagnosticRedactor.reference("alice"))
     #expect(bundle.events.first?.message.contains("secret") == false)
     #expect(bundle.events.first?.message.contains("[REDACTED]") == true)
     #expect(bundle.crashReports.first?.reason.contains("abc123") == false)
@@ -210,4 +211,58 @@ func appModelImportsDiagnosticCrashReportsWhenLoadingSnapshot() async throws {
     #expect(snapshot.diagnostics.contains { $0.category == "Crash" && $0.message.contains("Imported 1 macOS crash report") })
     #expect(refreshed.crashReports.count == 1)
     #expect(refreshed.diagnostics.filter { $0.category == "Crash" && $0.message.contains("Imported") }.count == 1)
+}
+
+// Exercise the archive as a consumer would, independently of our serialization code.
+private func diagnosticJSON(in archive: URL) throws -> Data {
+    func unzip(_ arguments: [String]) throws -> Data {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        return data
+    }
+    let listing = String(decoding: try unzip(["-Z1", archive.path]), as: UTF8.self)
+    let entry = try #require(listing.split(separator: "\n").first { $0.hasSuffix("diagnostics.json") })
+    return try unzip(["-p", archive.path, String(entry)])
+}
+
+@Test
+func diagnosticsExportIncludesRestartHistoryAndSanitizedPersistedState() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WesomeCloudPaths(root: root)
+    try paths.ensureDirectories()
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "private-user")
+    let domain = CloudDomain(id: "selected-space", accountID: account.id, displayName: "Private Client")
+    let record = PersistedAccountRecord(account: account, domain: domain)
+    let store = try SQLiteMetadataStore(databaseURL: paths.database)
+    let operation = PendingOperation(kind: .upload, itemID: "private-item", sourcePath: "/Users/private/report.xlsx", destinationPath: "/Clients/private/report.xlsx", lastErrorDescription: "token=secret")
+    try await store.enqueue(operation, accountID: record.metadataID)
+    try await store.recordSyncError(SyncErrorRecord(scope: .item, itemID: operation.itemID, message: "failed /Clients/private/report.xlsx", isRecoverable: true), accountID: record.metadataID)
+    try await store.upsertTransfer(TransferRecord(itemID: operation.itemID, direction: .download, phase: .failed,
+                                                 localURL: URL(fileURLWithPath: "/Users/private/report.xlsx"), remotePath: "/Clients/private/report.xlsx"), accountID: record.metadataID)
+    let journal = PersistentDiagnosticLog(directory: paths.logs)
+    try journal.append(DiagnosticEvent(category: "RemotePoll", level: .info, message: "Checked 3 folders", context: ["scope": record.metadataID.uuidString, "outcome": "success", "polled": "true"]))
+    let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
+                                   domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+                                   repository: MemoryAccountRepository(records: [record]), metadataStore: store,
+                                   diagnostics: AppDiagnosticBuffer(journal: PersistentDiagnosticLog(directory: paths.logs)))
+    let archive = try await model.exportDiagnostics(to: root)
+    let data = try diagnosticJSON(in: archive)
+    let text = String(decoding: data, as: UTF8.self)
+    for secret in ["private-user", "private-item", "Private Client", "report.xlsx", "secret"] { #expect(!text.contains(secret)) }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let bundle = try decoder.decode(DiagnosticsExportBundle.self, from: data)
+    #expect(bundle.pendingOperations?.first?.operation.attemptCount == 0)
+    #expect(bundle.syncErrors?.count == 1)
+    #expect(bundle.transfers?.first?.transfer.localURL == nil)
+    #expect(bundle.scopes?.first?.lastSuccessfulPoll?.message == "Checked 3 folders")
+    #expect(bundle.environment?.registeredDomainIDs == [])
 }

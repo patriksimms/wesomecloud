@@ -449,8 +449,8 @@ func fileProviderExtensionRecordsCallbackDiagnostics() async throws {
     _ = try await itemSnapshot(for: NSFileProviderItemIdentifier("root-file"), from: extensionInstance)
 
     let messages = await diagnostics.events.map(\.message)
-    #expect(messages.contains("item requested id=root-file"))
-    #expect(messages.contains("item completed id=root-file"))
+    #expect(messages.contains("item requested id=\(DiagnosticRedactor.reference("root-file"))"))
+    #expect(messages.contains("item completed id=\(DiagnosticRedactor.reference("root-file"))"))
 }
 
 @Test

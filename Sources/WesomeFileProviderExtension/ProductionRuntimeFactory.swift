@@ -92,7 +92,8 @@ public struct ProductionExtensionRuntimeFactory: Sendable {
             materializationDirectory: paths.materializedFiles.appending(path: configuration.metadataID.uuidString),
             uploadConfiguration: uploadConfiguration,
             presentationPolicy: configuration.filePreferences.fileProviderPresentationPolicy,
-            transferConfiguration: configuration.syncPreferences.fileProviderTransferConfiguration
+            transferConfiguration: configuration.syncPreferences.fileProviderTransferConfiguration,
+            diagnostics: PersistentDiagnosticLog(directory: paths.logs)
         )
         return coordinator
     }

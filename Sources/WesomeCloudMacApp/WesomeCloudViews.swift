@@ -103,6 +103,9 @@ public struct WesomeCloudRootView: View {
                     .padding(24)
                     DashboardView(
                         accounts: dashboard.accounts,
+                        syncNow: { Task { await viewModel.syncNow() } },
+                        exportDiagnostics: { Task { await viewModel.exportDiagnostics(to: FileManager.default.temporaryDirectory) } },
+                        isSyncDisabled: viewModel.isLoading || viewModel.preferences.sync.isSyncPaused,
                         spaces: dashboard.spaces,
                         notifications: dashboard.notifications,
                         storage: dashboard.storage,
@@ -352,6 +355,9 @@ public struct AccountSidebarRow: View {
 }
 
 public struct DashboardView: View {
+    public var syncNow: () -> Void
+    public var exportDiagnostics: () -> Void
+    public var isSyncDisabled: Bool
     public var accounts: [PersistedAccountRecord]
     public var spaces: [AppSpace]
     public var notifications: [AppNotification]
@@ -385,6 +391,9 @@ public struct DashboardView: View {
 
     public init(
         accounts: [PersistedAccountRecord],
+        syncNow: @escaping () -> Void = {},
+        exportDiagnostics: @escaping () -> Void = {},
+        isSyncDisabled: Bool = false,
         spaces: [AppSpace] = [],
         notifications: [AppNotification] = [],
         storage: [AppAccountStorage] = [],
@@ -415,6 +424,9 @@ public struct DashboardView: View {
         copyPublicLink: @escaping (AppPublicLink) -> Void = { _ in },
         deletePublicLink: @escaping (AppPublicLink) -> Void = { _ in }
     ) {
+        self.syncNow = syncNow
+        self.exportDiagnostics = exportDiagnostics
+        self.isSyncDisabled = isSyncDisabled
         self.accounts = accounts
         self.spaces = spaces
         self.notifications = notifications
@@ -498,11 +510,17 @@ public struct DashboardView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Sync Status")
-                .font(.title2.weight(.semibold))
-            Text("\(accounts.count) account\(accounts.count == 1 ? "" : "s") configured")
-                .foregroundStyle(.secondary)
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Sync Status")
+                    .font(.title2.weight(.semibold))
+                Text("\(accounts.count) account\(accounts.count == 1 ? "" : "s") configured")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Sync Now", systemImage: "arrow.clockwise", action: syncNow)
+                .disabled(isSyncDisabled || accounts.isEmpty)
+            Button("Export Diagnostics", systemImage: "square.and.arrow.up", action: exportDiagnostics)
         }
     }
 }
@@ -1021,8 +1039,13 @@ public struct AccountStatusTable: View {
                     Text(record.account.displayName)
                     Text(record.account.serverURL.host() ?? record.account.serverURL.absoluteString)
                         .foregroundStyle(.secondary)
-                    Text(record.lastSyncStatus.message)
-                        .foregroundStyle(record.lastSyncStatus.state == .error ? .red : .primary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.lastSyncStatus.message)
+                            .foregroundStyle(record.lastSyncStatus.state == .error ? .red : .primary)
+                        Text(record.lastSyncStatus.updatedAt, format: .dateTime.hour().minute().second())
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     storageCell(for: record.id)
                     Button {
                         reconnectAccount(record)

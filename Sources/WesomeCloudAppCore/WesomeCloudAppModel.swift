@@ -241,12 +241,15 @@ public struct AppConflict: Equatable, Identifiable, Sendable {
 public actor AppDiagnosticBuffer: DiagnosticSink {
     private var storage: [DiagnosticEvent] = []
     private let limit: Int
+    private let journal: PersistentDiagnosticLog?
 
-    public init(limit: Int = 200) {
+    public init(limit: Int = 200, journal: PersistentDiagnosticLog? = nil) {
+        self.journal = journal
         self.limit = limit
     }
 
     public func record(_ event: DiagnosticEvent) async {
+        await journal?.record(event)
         storage.append(event)
         if storage.count > limit {
             storage.removeFirst(storage.count - limit)
@@ -255,6 +258,10 @@ public actor AppDiagnosticBuffer: DiagnosticSink {
 
     public func events() async -> [DiagnosticEvent] {
         storage
+    }
+
+    public func persistedEvents() throws -> [DiagnosticEvent]? {
+        try journal?.events()
     }
 }
 
@@ -391,7 +398,7 @@ public actor WesomeCloudAppModel {
                              isSelected: record.domains.contains { $0.represents(space) })
                 })
             } catch {
-                await diagnostics.record(DiagnosticEvent(category: "Spaces", level: .debug, message: "Spaces unavailable for \(record.account.displayName): \(UserFacingErrorFormatter.message(for: error))"))
+                await diagnostics.record(DiagnosticEvent(category: "Spaces", level: .debug, message: "Spaces unavailable for \(DiagnosticRedactor.reference(record.account.displayName)): \(UserFacingErrorFormatter.message(for: error))"))
             }
         }
         return spaces.sorted {
@@ -412,7 +419,7 @@ public actor WesomeCloudAppModel {
                     AppNotification(accountID: record.id, accountName: record.account.displayName, notification: $0)
                 })
             } catch {
-                await diagnostics.record(DiagnosticEvent(category: "Notifications", level: .debug, message: "Notifications unavailable for \(record.account.displayName): \(UserFacingErrorFormatter.message(for: error))"))
+                await diagnostics.record(DiagnosticEvent(category: "Notifications", level: .debug, message: "Notifications unavailable for \(DiagnosticRedactor.reference(record.account.displayName)): \(UserFacingErrorFormatter.message(for: error))"))
             }
         }
         return notifications.sorted {
@@ -503,7 +510,7 @@ public actor WesomeCloudAppModel {
         record.lastSyncStatus = SyncStatusSnapshot(state: .idle, message: "Selected \(space.space.name) for Finder")
         try await repository.save(record)
         try await refreshFinderSelections()
-        await diagnostics.record(DiagnosticEvent(category: "Spaces", level: .info, message: "Syncing space \(space.space.name) for \(record.account.displayName)"))
+        await diagnostics.record(DiagnosticEvent(category: "Spaces", level: .info, message: "Syncing space \(DiagnosticRedactor.reference(space.space.name)) for \(DiagnosticRedactor.reference(record.account.displayName))"))
         return record
     }
 
@@ -551,7 +558,7 @@ public actor WesomeCloudAppModel {
         record.domains = selections
         try await repository.save(record)
         try await refreshFinderSelections()
-        await diagnostics.record(DiagnosticEvent(category: "App", level: .info, message: "Account \(readyMessageName) is ready"))
+        await diagnostics.record(DiagnosticEvent(category: "App", level: .info, message: "Account \(DiagnosticRedactor.reference(readyMessageName)) is ready"))
         return record
     }
 
@@ -584,9 +591,32 @@ public actor WesomeCloudAppModel {
     }
 
     public func exportDiagnostics(to directory: URL, exporter: DiagnosticsExporter = DiagnosticsExporter()) async throws -> URL {
-        let snapshot = try await loadSnapshot()
+        // Diagnostics must also work offline, without rediscovering Spaces or refreshing auth.
+        try await importCrashReportsIfAvailable()
+        let accounts = try await repository.records()
+        var snapshot = try await AppSnapshot(accounts: accounts, diagnostics: diagnostics.events(),
+                                             issues: loadIssues(for: accounts), transfers: loadTransfers(for: accounts),
+                                             crashReports: crashReports?.reports() ?? [])
         let preferences = try await loadPreferences()
-        let url = try exporter.export(snapshot: snapshot, preferences: preferences, to: directory)
+        if let history = try await diagnostics.persistedEvents() {
+            let persistedIDs = Set(history.map(\.id))
+            snapshot.diagnostics = (history + snapshot.diagnostics.filter { !persistedIDs.contains($0.id) }).sorted { $0.date < $1.date }
+        }
+        var pending: [DiagnosticsPendingOperation] = []
+        for account in snapshot.accounts.flatMap(\.syncLocations) {
+            for operation in try await metadataStore?.pendingOperations(accountID: account.metadataID) ?? [] {
+                pending.append(DiagnosticsPendingOperation(scopeID: account.metadataID, operation: operation))
+            }
+        }
+        var health: [String: FileProviderAccountIssue] = [:]
+        for account in snapshot.accounts {
+            if let issue = try await fileProviderHealth?.issue(accountID: account.id) { health[account.id.uuidString] = issue }
+        }
+        var environment = DiagnosticsEnvironment()
+        do { environment.registeredDomainIDs = try await domains.registeredDomainIDs() }
+        catch { environment.registrationError = DiagnosticRedactor.redact(String(describing: error)) }
+        let url = try exporter.export(snapshot: snapshot, preferences: preferences, pendingOperations: pending,
+                                      fileProviderHealth: health, environment: environment, to: directory)
         await diagnostics.record(DiagnosticEvent(category: "Diagnostics", level: .info, message: "Exported diagnostics to \(url.path)"))
         return url
     }
@@ -635,7 +665,7 @@ public actor WesomeCloudAppModel {
             try await metadataStore?.setAvailabilityIntent(intent, accountID: account.metadataID, itemID: itemID)
             affected = [itemID]
         }
-        await diagnostics.record(DiagnosticEvent(category: "Files", level: .info, message: "Set \(itemID) availability to \(intent.rawValue) for \(affected.count) item\(affected.count == 1 ? "" : "s")"))
+        await diagnostics.record(DiagnosticEvent(category: "Files", level: .info, message: "Set \(DiagnosticRedactor.reference(itemID)) availability to \(intent.rawValue) for \(affected.count) item\(affected.count == 1 ? "" : "s")"))
     }
 
     public func createPublicLink(accountID: UUID, itemID: String, domainID: String? = nil) async throws -> PublicLinkShare {

@@ -70,6 +70,7 @@ public actor BackgroundSyncScheduler {
     private let configuration: BackgroundSyncConfiguration
     private let configurationProvider: ConfigurationProvider?
     private let clock: @Sendable () -> Date
+    private let diagnostics: (any DiagnosticSink)?
     private var states: [UUID: AccountSyncScheduleState] = [:]
 
     public init(
@@ -78,7 +79,8 @@ public actor BackgroundSyncScheduler {
         metadataStore: MetadataStore? = nil,
         configuration: BackgroundSyncConfiguration = BackgroundSyncConfiguration(),
         configurationProvider: ConfigurationProvider? = nil,
-        clock: @escaping @Sendable () -> Date = Date.init
+        clock: @escaping @Sendable () -> Date = Date.init,
+        diagnostics: (any DiagnosticSink)? = nil
     ) {
         self.init(
             runner: runner,
@@ -87,7 +89,8 @@ public actor BackgroundSyncScheduler {
             changeSignaler: nil,
             configuration: configuration,
             configurationProvider: configurationProvider,
-            clock: clock
+            clock: clock,
+            diagnostics: diagnostics
         )
     }
 
@@ -98,7 +101,8 @@ public actor BackgroundSyncScheduler {
         changeSignaler: FileProviderChangeSignaling? = nil,
         configuration: BackgroundSyncConfiguration = BackgroundSyncConfiguration(),
         configurationProvider: ConfigurationProvider? = nil,
-        clock: @escaping @Sendable () -> Date = Date.init
+        clock: @escaping @Sendable () -> Date = Date.init,
+        diagnostics: (any DiagnosticSink)? = nil
     ) {
         self.runner = runner
         self.appModel = appModel
@@ -107,6 +111,7 @@ public actor BackgroundSyncScheduler {
         self.configuration = configuration
         self.configurationProvider = configurationProvider
         self.clock = clock
+        self.diagnostics = diagnostics
     }
 
     public func state(accountID: UUID) -> AccountSyncScheduleState {
@@ -123,9 +128,14 @@ public actor BackgroundSyncScheduler {
 
     private func runWork(for account: PersistedAccountRecord, force: Bool) async throws -> AccountSyncRunResult {
         let now = clock()
+        let runID = UUID().uuidString
+        let started = Date()
+        var context = ["run": runID, "scope": account.metadataID.uuidString, "account": account.id.uuidString,
+                       "trigger": force ? "manual" : "scheduled"]
         let configuration = try await effectiveConfiguration(for: account)
         var state = states[account.metadataID] ?? AccountSyncScheduleState()
         if configuration.isPaused {
+            await diagnostics?.record(DiagnosticEvent(category: "SyncRun", level: .info, message: "Sync skipped: paused", context: context))
             let result = AccountSyncRunResult(
                 accountID: account.id,
                 polledRemote: false,
@@ -156,6 +166,7 @@ public actor BackgroundSyncScheduler {
             return result
         }
 
+        await diagnostics?.record(DiagnosticEvent(category: "SyncRun", level: .info, message: "Sync started", context: context))
         try await appModel.updateSyncStatus(SyncStatusSnapshot(state: .syncing, message: "Syncing"), accountID: account.id)
 
         do {
@@ -164,6 +175,13 @@ public actor BackgroundSyncScheduler {
             if shouldPoll {
                 remoteChanges = try await runner.pollRemote(account: account)
                 state.lastPollAt = now
+                var pollContext = context
+                pollContext["outcome"] = "success"
+                pollContext["polled"] = "true"
+                pollContext["folders"] = remoteChanges.checkedFolderCount.map(String.init) ?? "unknown"
+                pollContext["folderLimitReached"] = String(remoteChanges.folderLimitReached)
+                pollContext["durationMs"] = String(Int(Date().timeIntervalSince(started) * 1_000))
+                await diagnostics?.record(DiagnosticEvent(category: "RemotePoll", level: .info, message: "Remote poll completed", context: pollContext))
                 // A successful authenticated poll can release an old Finder sign-in error,
                 // even when no remote files changed. The extension verifies its own recovery.
                 if let domainID = account.domain?.id {
@@ -179,7 +197,17 @@ public actor BackgroundSyncScheduler {
                 queueSummary = try await runner.processQueue(account: account)
                 state.lastQueueRunAt = now
             }
-            let message = Self.message(remoteChanges: remoteChanges, queueSummary: queueSummary)
+            let summary = Self.message(remoteChanges: remoteChanges, queueSummary: queueSummary)
+            let folderDetail = shouldPoll ? remoteChanges.checkedFolderCount.map { "Checked \($0) folders\(remoteChanges.folderLimitReached ? " (limit reached)" : ""). " } ?? "" : ""
+            let message = folderDetail + summary
+            context["outcome"] = queueSummary.failedPermanently.isEmpty ? "success" : "queueFailed"
+            context["polled"] = String(shouldPoll)
+            context["folders"] = remoteChanges.checkedFolderCount.map(String.init) ?? "unknown"
+            context["folderLimitReached"] = String(remoteChanges.folderLimitReached)
+            context["durationMs"] = String(Int(Date().timeIntervalSince(started) * 1_000))
+            context["queueFailed"] = String(queueSummary.failedPermanently.count)
+            context["queueRescheduled"] = String(queueSummary.rescheduled.count)
+            await diagnostics?.record(DiagnosticEvent(category: "SyncRun", level: queueSummary.failedPermanently.isEmpty ? .info : .error, message: message, context: context))
             let result = AccountSyncRunResult(
                 accountID: account.id,
                 polledRemote: shouldPoll,
@@ -224,6 +252,9 @@ public actor BackgroundSyncScheduler {
             return result
         } catch {
             let message = "Sync failed: \(UserFacingErrorFormatter.message(for: error))"
+            context["outcome"] = "failed"
+            context["durationMs"] = String(Int(Date().timeIntervalSince(started) * 1_000))
+            await diagnostics?.record(DiagnosticEvent(category: "SyncRun", level: .error, message: message, context: context))
             let result = AccountSyncRunResult(accountID: account.id, polledRemote: shouldPoll, processedQueue: shouldProcessQueue, failedOperations: 1, message: message)
             state.lastResult = result
             states[account.metadataID] = state
@@ -257,7 +288,7 @@ public actor BackgroundSyncScheduler {
     private static func message(remoteChanges: RemoteChangeSet, queueSummary: QueueProcessingSummary) -> String {
         let remoteCount = remoteChanges.added.count + remoteChanges.updated.count + remoteChanges.deleted.count
         let queueCount = queueSummary.completed.count + queueSummary.rescheduled.count + queueSummary.failedPermanently.count
-        if remoteCount == 0 && queueCount == 0 { return "Up to date" }
+        if remoteCount == 0 && queueCount == 0 { return "No changes detected" }
         return "\(remoteCount) remote change\(remoteCount == 1 ? "" : "s"), \(queueCount) queued operation\(queueCount == 1 ? "" : "s")"
     }
 
@@ -282,6 +313,7 @@ public actor BackgroundSyncScheduler {
         do {
             for containerID in changes.fileProviderContainerIdentifiersToSignal {
                 try await changeSignaler.signalEnumerator(domainID: domainID, containerItemIdentifier: containerID)
+                await diagnostics?.record(DiagnosticEvent(category: "FinderRefresh", level: .info, message: "Refresh signaled", context: ["scope": account.metadataID.uuidString, "container": DiagnosticRedactor.reference(containerID)]))
             }
         } catch {
             try await metadataStore?.recordSyncError(
