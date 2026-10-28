@@ -198,7 +198,7 @@ public actor BackgroundSyncScheduler {
                 state.lastQueueRunAt = now
             }
             let summary = Self.message(remoteChanges: remoteChanges, queueSummary: queueSummary)
-            let folderDetail = shouldPoll ? remoteChanges.checkedFolderCount.map { "Checked \($0) folders\(remoteChanges.folderLimitReached ? " (limit reached)" : ""). " } ?? "" : ""
+            let folderDetail = shouldPoll ? remoteChanges.checkedFolderCount.map { "Checked \($0) folder\($0 == 1 ? "" : "s")\(remoteChanges.folderLimitReached ? " (limit reached)" : ""). " } ?? "" : ""
             let message = folderDetail + summary
             context["outcome"] = queueSummary.failedPermanently.isEmpty ? "success" : "queueFailed"
             context["polled"] = String(shouldPoll)

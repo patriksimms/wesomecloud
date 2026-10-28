@@ -60,6 +60,7 @@ func diagnosticJournalExpiresOldSegmentsAndBoundsDiskUsage() throws {
     "Authorization: Bearer abc.def.ghi", "access_token=abc123", "password: abc123",
     "URL https://example.test/download?secret=abc123", "file /Users/private/Client Report.xlsx",
     "Error Domain=Test UserInfo={NSFilePath=\"Client Report.xlsx\"}",
+    String(describing: WesomeCloudError.invalidFilename("prefix\"Client Report.xlsx.", .trailingWhitespaceOrPeriod)),
 ])
 func diagnosticRedactionRemovesPrivateValues(_ message: String) {
     let redacted = DiagnosticRedactor.redact(message)

@@ -16,7 +16,7 @@ public enum DiagnosticRedactor {
             result = result.replacingOccurrences(of: pattern, with: "[REDACTED]", options: .regularExpression)
         }
         // Quotes in NSError descriptions may contain file names or paths with spaces.
-        for pattern in [#"\"[^\"\r\n]*\""#, #"https?://[^\s<>\"\)]+"#, #"(?<!\w)/[^\r\n]*"#,
+        for pattern in [#""(?:\\.|[^"\\\r\n])*""#, #"https?://[^\s<>\"\)]+"#, #"(?<!\w)/[^\r\n]*"#,
                         #"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#] {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
             for match in regex.matches(in: result, range: NSRange(result.startIndex..., in: result)).reversed() {

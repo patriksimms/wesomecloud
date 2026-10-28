@@ -52,6 +52,13 @@ public struct DiagnosticsAccountSummary: Codable, Equatable, Sendable, Identifia
         self.serverVersion = record.serverVersion
         self.serverEdition = record.serverEdition
         self.syncStatus = record.lastSyncStatus
+        // Removed Spaces no longer appear in record.domains; handle their persisted status too.
+        for (prefix, suffix) in [("Selected ", " for Finder"), ("Removed ", " from Finder")] {
+            if syncStatus.message.hasPrefix(prefix), syncStatus.message.hasSuffix(suffix) {
+                let name = String(syncStatus.message.dropFirst(prefix.count).dropLast(suffix.count))
+                syncStatus.message = prefix + DiagnosticRedactor.reference(name) + suffix
+            }
+        }
         let names = [record.account.username, record.account.displayName] + record.domains.map(\.displayName)
         for name in names.filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
             self.syncStatus.message = self.syncStatus.message.replacingOccurrences(of: name, with: DiagnosticRedactor.reference(name))
@@ -127,7 +134,7 @@ public struct DiagnosticsExporter: Sendable {
 
     private static func redacted(_ event: DiagnosticEvent) -> DiagnosticEvent {
         var redacted = event
-        redacted.message = redact(event.message)
+        redacted.message = String(redact(event.message).prefix(8_192))
         redacted.context = event.context?.mapValues(redact)
         return redacted
     }

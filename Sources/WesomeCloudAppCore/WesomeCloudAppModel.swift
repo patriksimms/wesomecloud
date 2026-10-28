@@ -592,27 +592,42 @@ public actor WesomeCloudAppModel {
 
     public func exportDiagnostics(to directory: URL, exporter: DiagnosticsExporter = DiagnosticsExporter()) async throws -> URL {
         // Diagnostics must also work offline, without rediscovering Spaces or refreshing auth.
-        try await importCrashReportsIfAvailable()
+        var environment = DiagnosticsEnvironment()
+        var collectionErrors: [String: String] = [:]
+        do { try await importCrashReportsIfAvailable() }
+        catch { collectionErrors["crashImport"] = DiagnosticRedactor.redact(String(describing: error)) }
         let accounts = try await repository.records()
-        var snapshot = try await AppSnapshot(accounts: accounts, diagnostics: diagnostics.events(),
-                                             issues: loadIssues(for: accounts), transfers: loadTransfers(for: accounts),
-                                             crashReports: crashReports?.reports() ?? [])
+        let cutoff = Date().addingTimeInterval(-PersistentDiagnosticLog.defaultRetention)
+        var snapshot = await AppSnapshot(accounts: accounts, diagnostics: diagnostics.events().filter { $0.date >= cutoff })
         let preferences = try await loadPreferences()
-        if let history = try await diagnostics.persistedEvents() {
-            // Memory may still contain events evicted by retention or the disk cap.
-            snapshot.diagnostics = history
-        }
+        do {
+            if let history = try await diagnostics.persistedEvents() {
+                // Memory may still contain events evicted by retention or the disk cap.
+                snapshot.diagnostics = history
+            }
+        } catch { collectionErrors["journal"] = DiagnosticRedactor.redact(String(describing: error)) }
+        do { snapshot.crashReports = try await crashReports?.reports() ?? [] }
+        catch { collectionErrors["crashReports"] = DiagnosticRedactor.redact(String(describing: error)) }
         var pending: [DiagnosticsPendingOperation] = []
         for account in snapshot.accounts.flatMap(\.syncLocations) {
-            for operation in try await metadataStore?.pendingOperations(accountID: account.metadataID) ?? [] {
-                pending.append(DiagnosticsPendingOperation(scopeID: account.metadataID, operation: operation))
-            }
+            let scope = account.metadataID.uuidString
+            do { snapshot.issues += try await loadIssues(for: [account]) }
+            catch { collectionErrors["syncErrors:" + scope] = DiagnosticRedactor.redact(String(describing: error)) }
+            do { snapshot.transfers += try await loadTransfers(for: [account]) }
+            catch { collectionErrors["transfers:" + scope] = DiagnosticRedactor.redact(String(describing: error)) }
+            do {
+                for operation in try await metadataStore?.pendingOperations(accountID: account.metadataID) ?? [] {
+                    pending.append(DiagnosticsPendingOperation(scopeID: account.metadataID, operation: operation))
+                }
+            } catch { collectionErrors["pendingOperations:" + scope] = DiagnosticRedactor.redact(String(describing: error)) }
         }
         var health: [String: FileProviderAccountIssue] = [:]
         for account in snapshot.accounts {
-            if let issue = try await fileProviderHealth?.issue(accountID: account.id) { health[account.id.uuidString] = issue }
+            do {
+                if let issue = try await fileProviderHealth?.issue(accountID: account.id) { health[account.id.uuidString] = issue }
+            } catch { collectionErrors["fileProviderHealth:" + account.id.uuidString] = DiagnosticRedactor.redact(String(describing: error)) }
         }
-        var environment = DiagnosticsEnvironment()
+        environment.collectionErrors = collectionErrors.isEmpty ? nil : collectionErrors
         do { environment.registeredDomainIDs = try await domains.registeredDomainIDs() }
         catch { environment.registrationError = DiagnosticRedactor.redact(String(describing: error)) }
         let url = try exporter.export(snapshot: snapshot, preferences: preferences, pendingOperations: pending,

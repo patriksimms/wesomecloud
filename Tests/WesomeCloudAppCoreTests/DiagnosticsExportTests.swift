@@ -3,6 +3,7 @@ import Testing
 import WesomeCloudAppCore
 import WesomeCloudShared
 import SyncStore
+import SQLite3
 
 @Test
 func diagnosticsExporterWritesRedactedBundle() async throws {
@@ -251,9 +252,10 @@ func diagnosticsExportIncludesRestartHistoryAndSanitizedPersistedState() async t
     try journal.append(DiagnosticEvent(category: "RemotePoll", level: .info, message: "Checked 3 folders", context: ["scope": record.metadataID.uuidString, "outcome": "success", "polled": "true"]))
     let buffer = AppDiagnosticBuffer(journal: PersistentDiagnosticLog(directory: paths.logs))
     await buffer.record(DiagnosticEvent(date: Date().addingTimeInterval(-8 * 86_400), category: "Test", level: .info, message: "expired-event"))
+    let repository = MemoryAccountRepository(records: [record])
     let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
                                    domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
-                                   repository: MemoryAccountRepository(records: [record]), metadataStore: store,
+                                   repository: repository, metadataStore: store,
                                    diagnostics: buffer)
     let archive = try await model.exportDiagnostics(to: root)
     let data = try diagnosticJSON(in: archive)
@@ -267,4 +269,48 @@ func diagnosticsExportIncludesRestartHistoryAndSanitizedPersistedState() async t
     #expect(bundle.transfers?.first?.transfer.localURL == nil)
     #expect(bundle.scopes?.first?.lastSuccessfulPoll?.message == "Checked 3 folders")
     #expect(bundle.environment?.registeredDomainIDs == [])
+    var removed = record
+    removed.domains = []
+    removed.lastSyncStatus.message = "Removed Private Client from Finder"
+    try await repository.save(removed)
+    let afterRemoval = try diagnosticJSON(in: await model.exportDiagnostics(to: root))
+    #expect(!String(decoding: afterRemoval, as: UTF8.self).contains("Private Client"))
+}
+
+@Test
+func diagnosticsExportPreservesAvailableEvidenceWhenLocalSourcesFail() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WesomeCloudPaths(root: root)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // A file where the journal directory belongs reproduces a real filesystem failure.
+    try Data().write(to: paths.logs)
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let record = PersistedAccountRecord(account: account)
+    let store = try SQLiteMetadataStore(databaseURL: paths.database)
+    try await store.upsertTransfer(TransferRecord(itemID: "item", direction: .download, phase: .failed, remotePath: "/report.xlsx"), accountID: record.metadataID)
+    // Corrupt only the queue table in this disposable database; other sources still work.
+    var database: OpaquePointer?
+    try #require(sqlite3_open(paths.database.path, &database) == SQLITE_OK)
+    defer { sqlite3_close(database) }
+    try #require(sqlite3_exec(database, "DROP TABLE pending_operations", nil, nil, nil) == SQLITE_OK)
+    let health = FileProviderHealthStore(paths: paths)
+    try FileManager.default.createDirectory(at: root.appending(path: "FileProviderHealth/\(account.id).json"), withIntermediateDirectories: true)
+    let buffer = AppDiagnosticBuffer(journal: PersistentDiagnosticLog(directory: paths.logs))
+    await buffer.record(DiagnosticEvent(category: "Test", level: .info, message: "available evidence"))
+    await buffer.record(DiagnosticEvent(date: Date().addingTimeInterval(-8 * 86_400), category: "Test", level: .info, message: "expired evidence"))
+    let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
+                                   domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+                                   repository: MemoryAccountRepository(records: [record]), metadataStore: store, fileProviderHealth: health, diagnostics: buffer)
+    let archive = try await model.exportDiagnostics(to: root)
+    let data = try diagnosticJSON(in: archive)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let bundle = try decoder.decode(DiagnosticsExportBundle.self, from: data)
+    #expect(bundle.events.map(\.message) == ["available evidence"])
+    #expect(bundle.transfers?.count == 1)
+    #expect(bundle.environment?.collectionErrors?["journal"] != nil)
+    #expect(bundle.environment?.collectionErrors?["pendingOperations:" + record.metadataID.uuidString] != nil)
+    #expect(bundle.environment?.collectionErrors?["fileProviderHealth:" + account.id.uuidString] != nil)
+    #expect(!String(decoding: data, as: UTF8.self).contains(root.path))
 }

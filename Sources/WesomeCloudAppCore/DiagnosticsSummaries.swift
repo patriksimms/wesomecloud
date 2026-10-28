@@ -9,6 +9,7 @@ public struct DiagnosticsEnvironment: Codable, Equatable, Sendable {
     public var macOSVersion = ProcessInfo.processInfo.operatingSystemVersionString
     public var registeredDomainIDs: [String]?
     public var registrationError: String?
+    public var collectionErrors: [String: String]?
 
     public init() {}
 }

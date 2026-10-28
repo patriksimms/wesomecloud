@@ -377,7 +377,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 await logger.info("createItem completed id=\(DiagnosticRedactor.reference(created.id))")
                 progress.completedUnitCount = 1
             } catch {
-                await logger.error("createItem failed filename=\(DiagnosticRedactor.reference(itemTemplate.filename)) error=\(String(describing: error))")
+                await logger.error("createItem failed filename=\(DiagnosticRedactor.reference(itemTemplate.filename)) errorCode=\(error.asFileProviderNSError.code)")
                 completion.call(nil, [], false, error.asFileProviderNSError)
             }
         }

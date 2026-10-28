@@ -5,13 +5,14 @@ import OSLog
 /// A shared journal for the app and extension. The lock covers append, rotation and reads
 /// across processes; each segment is at most 1 MiB and the journal is at most 10 MiB.
 public struct PersistentDiagnosticLog: DiagnosticSink, Sendable {
+    public static let defaultRetention: TimeInterval = 7 * 86_400
     public let directory: URL
     private let maximumBytes: Int
     private let retention: TimeInterval
     private let clock: @Sendable () -> Date
 
     public init(directory: URL, maximumBytes: Int = 10 * 1_024 * 1_024,
-                retention: TimeInterval = 7 * 86_400, clock: @escaping @Sendable () -> Date = Date.init) {
+                retention: TimeInterval = PersistentDiagnosticLog.defaultRetention, clock: @escaping @Sendable () -> Date = Date.init) {
         self.directory = directory
         self.maximumBytes = max(1_024, maximumBytes)
         self.retention = retention

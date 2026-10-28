@@ -443,7 +443,8 @@ func fileProviderRootItemPreservesSystemRootIdentifier() async throws {
 @Test
 func fileProviderExtensionRecordsCallbackDiagnostics() async throws {
     let diagnostics = MemoryDiagnosticSink()
-    let runtime = FileProviderExtensionRuntime(adapter: FileProviderAdapter(backend: ExtensionBackend()))
+    let backend = ExtensionBackend()
+    let runtime = FileProviderExtensionRuntime(adapter: FileProviderAdapter(backend: backend))
     let extensionInstance = WesomeFileProviderReplicatedExtension(runtime: runtime, diagnostics: diagnostics)
 
     _ = try await itemSnapshot(for: NSFileProviderItemIdentifier("root-file"), from: extensionInstance)
@@ -451,7 +452,13 @@ func fileProviderExtensionRecordsCallbackDiagnostics() async throws {
     let template = WesomeFileProviderItem(item: ProviderItem(stored: StoredItem(remote:
         RemoteItem(id: "template", parentID: nil, name: "Private Client Report.xlsx", path: "/Private Client Report.xlsx", kind: .file))))
     _ = try await createItem(template, contents: nil, from: extensionInstance)
+    let badName = "prefix\"Private Client.xlsx."
+    await backend.failCreate(with: WesomeCloudError.invalidFilename(badName, .trailingWhitespaceOrPeriod))
+    let rejected = WesomeFileProviderItem(item: ProviderItem(stored: StoredItem(remote:
+        RemoteItem(id: "rejected", parentID: nil, name: badName, path: "/" + badName, kind: .file))))
+    await #expect(throws: Error.self) { _ = try await createItem(rejected, contents: nil, from: extensionInstance) }
     let messages = await diagnostics.events.map(\.message)
+    #expect(messages.contains { $0.hasPrefix("createItem failed") })
     #expect(messages.contains { $0.hasPrefix("createItem requested filename=") })
     #expect(!messages.contains { $0.contains("Private Client") || $0.contains("Report.xlsx") })
     #expect(messages.contains("item requested id=\(DiagnosticRedactor.reference("root-file"))"))

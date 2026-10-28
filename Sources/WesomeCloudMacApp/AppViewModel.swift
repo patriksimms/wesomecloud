@@ -643,18 +643,6 @@ public final class WesomeCloudViewModel {
         defer { isLoading = false }
         do {
             lastDiagnosticsExportURL = try await model.exportDiagnostics(to: directory)
-            let snapshot = try await model.loadSnapshot()
-            spaces = snapshot.spaces
-            notifications = snapshot.notifications
-            files = snapshot.files
-            diagnostics = snapshot.diagnostics
-            issues = snapshot.issues
-            conflicts = snapshot.conflicts
-            transfers = snapshot.transfers
-            storage = snapshot.storage
-            publicLinks = snapshot.publicLinks
-            updateStatus = snapshot.updateStatus
-            lastCreatedShare = snapshot.lastCreatedShare
             lastErrorMessage = nil
         } catch {
             tracking.captureError(error, operation: .exportDiagnostics, sessionID: trackingSession)
