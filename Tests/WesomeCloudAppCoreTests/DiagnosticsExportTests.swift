@@ -240,7 +240,7 @@ func diagnosticsExportIncludesRestartHistoryAndSanitizedPersistedState() async t
     try paths.ensureDirectories()
     let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "private-user")
     let domain = CloudDomain(id: "selected-space", accountID: account.id, displayName: "Private Client")
-    let record = PersistedAccountRecord(account: account, domain: domain)
+    let record = PersistedAccountRecord(account: account, domain: domain, lastSyncStatus: SyncStatusSnapshot(message: "Selected Private Client for Finder"))
     let store = try SQLiteMetadataStore(databaseURL: paths.database)
     let operation = PendingOperation(kind: .upload, itemID: "private-item", sourcePath: "/Users/private/report.xlsx", destinationPath: "/Clients/private/report.xlsx", lastErrorDescription: "token=secret")
     try await store.enqueue(operation, accountID: record.metadataID)
@@ -249,14 +249,16 @@ func diagnosticsExportIncludesRestartHistoryAndSanitizedPersistedState() async t
                                                  localURL: URL(fileURLWithPath: "/Users/private/report.xlsx"), remotePath: "/Clients/private/report.xlsx"), accountID: record.metadataID)
     let journal = PersistentDiagnosticLog(directory: paths.logs)
     try journal.append(DiagnosticEvent(category: "RemotePoll", level: .info, message: "Checked 3 folders", context: ["scope": record.metadataID.uuidString, "outcome": "success", "polled": "true"]))
+    let buffer = AppDiagnosticBuffer(journal: PersistentDiagnosticLog(directory: paths.logs))
+    await buffer.record(DiagnosticEvent(date: Date().addingTimeInterval(-8 * 86_400), category: "Test", level: .info, message: "expired-event"))
     let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
                                    domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
                                    repository: MemoryAccountRepository(records: [record]), metadataStore: store,
-                                   diagnostics: AppDiagnosticBuffer(journal: PersistentDiagnosticLog(directory: paths.logs)))
+                                   diagnostics: buffer)
     let archive = try await model.exportDiagnostics(to: root)
     let data = try diagnosticJSON(in: archive)
     let text = String(decoding: data, as: UTF8.self)
-    for secret in ["private-user", "private-item", "Private Client", "report.xlsx", "secret"] { #expect(!text.contains(secret)) }
+    for secret in ["private-user", "private-item", "Private Client", "report.xlsx", "secret", "expired-event"] { #expect(!text.contains(secret)) }
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let bundle = try decoder.decode(DiagnosticsExportBundle.self, from: data)

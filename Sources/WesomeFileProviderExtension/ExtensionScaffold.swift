@@ -133,7 +133,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
     }
 
     public func enumerator(for containerItemIdentifier: NSFileProviderItemIdentifier, request: NSFileProviderRequest) throws -> NSFileProviderEnumerator {
-        Task { await logger.info("enumerator container=\(containerItemIdentifier.rawValue)") }
+        Task { await logger.info("enumerator container=\(DiagnosticRedactor.reference(containerItemIdentifier.rawValue))") }
         if containerItemIdentifier == .trashContainer {
             return WesomeFileProviderEmptyEnumerator()
         }
@@ -246,7 +246,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         let requestedVersion = requestedVersion.map(RequestedProviderVersion.init)
         let task = Task<Void, Never> {
             let itemID = String(itemIdentifier.rawValue)
-            await logger.info("fetchIncrementalContents requested id=\(DiagnosticRedactor.reference(itemID)) existing=\(existingContents.lastPathComponent)")
+            await logger.info("fetchIncrementalContents requested id=\(DiagnosticRedactor.reference(itemID)) existing=\(DiagnosticRedactor.reference(existingContents.lastPathComponent))")
             do {
                 let runtime = try await runtimeBox.resolve()
                 let parentPath = await runtime.itemCache.parentPath(for: itemID)
@@ -340,7 +340,7 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
         let progress = Progress(totalUnitCount: 1)
         let completion = MutationCompletionBox(completionHandler)
         let task = Task<Void, Never> {
-            await logger.info("createItem requested filename=\(itemTemplate.filename)")
+            await logger.info("createItem requested filename=\(DiagnosticRedactor.reference(itemTemplate.filename))")
             do {
                 let runtime = try await runtimeBox.resolve()
                 let parentID = itemTemplate.parentItemIdentifier == .rootContainer ? nil : String(itemTemplate.parentItemIdentifier.rawValue)
@@ -374,10 +374,10 @@ open class WesomeFileProviderReplicatedExtension: NSObject, NSFileProviderReplic
                 }
                 await runtime.itemCache.register(created, parentPath: parentPath)
                 completion.call(WesomeFileProviderItem(item: created), [], false, nil)
-                await logger.info("createItem completed id=\(created.id)")
+                await logger.info("createItem completed id=\(DiagnosticRedactor.reference(created.id))")
                 progress.completedUnitCount = 1
             } catch {
-                await logger.error("createItem failed filename=\(itemTemplate.filename) error=\(String(describing: error))")
+                await logger.error("createItem failed filename=\(DiagnosticRedactor.reference(itemTemplate.filename)) error=\(String(describing: error))")
                 completion.call(nil, [], false, error.asFileProviderNSError)
             }
         }
@@ -685,7 +685,7 @@ public final class WesomeFileProviderReplicatedExtension: NSObject {
 @available(macOS 26.0, *)
 extension WesomeFileProviderReplicatedExtension: NSFileProviderSearching {
     public func searchEnumerator(for request: NSFileProviderStringSearchRequest) -> NSFileProviderSearchEnumerator {
-        Task { await logger.info("searchEnumerator query=\(request.query)") }
+        Task { await logger.info("searchEnumerator query=\(DiagnosticRedactor.reference(request.query))") }
         return WesomeFileProviderSearchEnumerator(
             runtimeProvider: { try await self.runtimeBox.resolve() },
             query: request.query,

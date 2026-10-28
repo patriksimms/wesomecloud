@@ -448,7 +448,12 @@ func fileProviderExtensionRecordsCallbackDiagnostics() async throws {
 
     _ = try await itemSnapshot(for: NSFileProviderItemIdentifier("root-file"), from: extensionInstance)
 
+    let template = WesomeFileProviderItem(item: ProviderItem(stored: StoredItem(remote:
+        RemoteItem(id: "template", parentID: nil, name: "Private Client Report.xlsx", path: "/Private Client Report.xlsx", kind: .file))))
+    _ = try await createItem(template, contents: nil, from: extensionInstance)
     let messages = await diagnostics.events.map(\.message)
+    #expect(messages.contains { $0.hasPrefix("createItem requested filename=") })
+    #expect(!messages.contains { $0.contains("Private Client") || $0.contains("Report.xlsx") })
     #expect(messages.contains("item requested id=\(DiagnosticRedactor.reference("root-file"))"))
     #expect(messages.contains("item completed id=\(DiagnosticRedactor.reference("root-file"))"))
 }
@@ -662,10 +667,12 @@ func fileProviderIncrementalFetchReusesExistingContentsWhenVersionMatches() asyn
     )
     await backend.setItem(item)
     let runtime = FileProviderExtensionRuntime(adapter: FileProviderAdapter(backend: backend))
-    let extensionInstance = WesomeFileProviderReplicatedExtension(runtime: runtime)
-    let existingURL = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString)
-        .appendingPathExtension("txt")
+    let diagnostics = MemoryDiagnosticSink()
+    let extensionInstance = WesomeFileProviderReplicatedExtension(runtime: runtime, diagnostics: diagnostics)
+    let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let existingURL = directory.appending(path: "Private Client Report.txt")
     try Data("same".utf8).write(to: existingURL)
     let currentVersion = NSFileProviderItemVersion(
         contentVersion: item.contentVersion,
@@ -682,6 +689,9 @@ func fileProviderIncrementalFetchReusesExistingContentsWhenVersionMatches() asyn
 
     #expect(fetchedURL == existingURL)
     #expect(await backend.fetchStarted == false)
+    let events = await diagnostics.events
+    #expect(events.contains { $0.message.hasPrefix("fetchIncrementalContents requested") })
+    #expect(!events.contains { $0.message.contains("Private Client") || $0.message.contains("Report.txt") })
 }
 
 @Test

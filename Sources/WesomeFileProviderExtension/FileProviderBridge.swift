@@ -210,7 +210,7 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
                 observer.didEnumerate(providerPage.items.map(WesomeFileProviderItem.init))
                 observer.finishEnumerating(upTo: providerPage.nextPageToken.map(NSFileProviderPage.providerPage))
             } catch {
-                await logger.error("enumerateItems failed container=\(containerIdentifier ?? "adapter") error=\(String(describing: error))")
+                await logger.error("enumerateItems failed container=\(DiagnosticRedactor.reference(containerIdentifier ?? "adapter")) error=\(String(describing: error))")
                 observer.finishEnumeratingWithError(error.asFileProviderNSError)
             }
         }
@@ -228,7 +228,7 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
                 observer.didDeleteItems(withIdentifiers: changes.deleted.map { NSFileProviderItemIdentifier($0) })
                 observer.finishEnumeratingChanges(upTo: anchorState.advance(), moreComing: false)
             } catch {
-                await logger.error("enumerateChanges failed container=\(containerIdentifier ?? "adapter") error=\(String(describing: error))")
+                await logger.error("enumerateChanges failed container=\(DiagnosticRedactor.reference(containerIdentifier ?? "adapter")) error=\(String(describing: error))")
                 observer.finishEnumeratingWithError(error.asFileProviderNSError)
             }
         }

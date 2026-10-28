@@ -599,8 +599,8 @@ public actor WesomeCloudAppModel {
                                              crashReports: crashReports?.reports() ?? [])
         let preferences = try await loadPreferences()
         if let history = try await diagnostics.persistedEvents() {
-            let persistedIDs = Set(history.map(\.id))
-            snapshot.diagnostics = (history + snapshot.diagnostics.filter { !persistedIDs.contains($0.id) }).sorted { $0.date < $1.date }
+            // Memory may still contain events evicted by retention or the disk cap.
+            snapshot.diagnostics = history
         }
         var pending: [DiagnosticsPendingOperation] = []
         for account in snapshot.accounts.flatMap(\.syncLocations) {

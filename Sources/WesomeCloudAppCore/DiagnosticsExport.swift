@@ -52,6 +52,10 @@ public struct DiagnosticsAccountSummary: Codable, Equatable, Sendable, Identifia
         self.serverVersion = record.serverVersion
         self.serverEdition = record.serverEdition
         self.syncStatus = record.lastSyncStatus
+        let names = [record.account.username, record.account.displayName] + record.domains.map(\.displayName)
+        for name in names.filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
+            self.syncStatus.message = self.syncStatus.message.replacingOccurrences(of: name, with: DiagnosticRedactor.reference(name))
+        }
         self.syncStatus.message = DiagnosticRedactor.redact(self.syncStatus.message)
     }
 }
