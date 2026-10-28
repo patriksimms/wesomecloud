@@ -181,6 +181,8 @@ public struct RemoteChangeSet: Equatable, Sendable {
     public var added: [ProviderItem]
     public var updated: [ProviderItem]
     public var deletedItems: [DeletedProviderItem]
+    public var checkedFolderCount: Int? = nil
+    public var folderLimitReached: Bool = false
 
     public var deleted: [String] {
         deletedItems.map(\.id)
@@ -315,7 +317,7 @@ public actor FileProviderCoordinator {
     private let presentationPolicy: FileProviderPresentationPolicy
     private let transferLimiter: TransferLimiter
     private var cancelledItemIDs: Set<String> = []
-    private let logger = WesomeLogger(category: "Sync")
+    private let logger: WesomeLogger
 
     public init(
         account: Account,
@@ -326,8 +328,10 @@ public actor FileProviderCoordinator {
         syncPolicy: SyncPolicy = SyncPolicy(),
         uploadConfiguration: UploadConfiguration = UploadConfiguration(),
         presentationPolicy: FileProviderPresentationPolicy = FileProviderPresentationPolicy(),
-        transferConfiguration: TransferConfiguration = TransferConfiguration()
+        transferConfiguration: TransferConfiguration = TransferConfiguration(),
+        diagnostics: (any DiagnosticSink)? = nil
     ) {
+        self.logger = WesomeLogger(category: "Sync", sink: diagnostics)
         self.metadataID = metadataID ?? account.id
         self.webDAV = webDAV
         self.store = store
@@ -349,8 +353,8 @@ public actor FileProviderCoordinator {
                 remotePath: remotePath,
                 existingItems: existingItems
             )
-            let sample = fetched.prefix(5).map { "\($0.path)<-\($0.parentID ?? "nil")" }.joined(separator: ", ")
-            await logger.info("enumerate scope=\(metadataID) path=\(remotePath) parent=\(parentID ?? "root") fetched=\(fetched.count) children=\(remoteItems.count) sample=[\(sample)]")
+
+            await logger.info("enumerate scope=\(metadataID) path=\(DiagnosticRedactor.reference(remotePath)) parent=\(DiagnosticRedactor.reference(parentID ?? "root")) fetched=\(fetched.count) children=\(remoteItems.count)")
             let remoteIDs = Set(remoteItems.map(\.id))
             let cached = try await store.children(accountID: metadataID, parentID: parentID)
             _ = try await removeRemotelyDeleted(cached.filter { !remoteIDs.contains($0.remote.id) })
@@ -358,6 +362,7 @@ public actor FileProviderCoordinator {
             try await applyDefaultAvailabilityIntent(to: remoteItems, existingIDs: existingIDs)
         } catch {
             guard error.allowsCachedEnumerationFallback else { throw error }
+            await logger.warning("enumerate using cache scope=\(metadataID) path=\(DiagnosticRedactor.reference(remotePath)) error=\(error)")
             let cached = try await store.children(accountID: metadataID, parentID: parentID)
             if cached.isEmpty { throw error }
         }
@@ -385,6 +390,21 @@ public actor FileProviderCoordinator {
     }
 
     public func fetchContents(itemID: String) async throws -> URL {
+        let request = UUID()
+        let start = Date()
+        let scope = "request=\(request) scope=\(metadataID) item=\(DiagnosticRedactor.reference(itemID))"
+        await logger.info("download requested \(scope)")
+        do {
+            let result = try await downloadContents(itemID: itemID)
+            await logger.info("download completed \(scope) durationMs=\(Int(Date().timeIntervalSince(start) * 1_000))")
+            return result
+        } catch {
+            await logger.error("download \((error is CancellationError || (error as? URLError)?.code == .cancelled) ? "cancelled" : "failed") \(scope) error=\(error)")
+            throw error
+        }
+    }
+
+    private func downloadContents(itemID: String) async throws -> URL {
         guard let stored = try await store.item(accountID: metadataID, id: itemID) else {
             throw WesomeCloudError.missingItem(itemID)
         }
@@ -421,6 +441,7 @@ public actor FileProviderCoordinator {
         do {
             try await checkTransferNotCancelled(itemID: itemID, transferID: transferID, direction: .download, localURL: partialDestination, remotePath: stored.remote.path, totalBytes: stored.remote.size)
             // If-Range makes the server send the full file instead of appending bytes of a newer version.
+            await logger.info("download started scope=\(metadataID) item=\(DiagnosticRedactor.reference(itemID)) transfer=\(transferID)")
             let response = try await webDAV.downloadRange(
                 path: stored.remote.path,
                 startingAt: existingBytes,
@@ -484,6 +505,21 @@ public actor FileProviderCoordinator {
     }
 
     public func fetchPartialContents(itemID: String, requestedRange: ProviderContentRange, alignment: Int64) async throws -> PartialProviderContent {
+        let request = UUID()
+        let start = Date()
+        let scope = "request=\(request) scope=\(metadataID) item=\(DiagnosticRedactor.reference(itemID)) offset=\(requestedRange.offset) length=\(requestedRange.length)"
+        await logger.info("partial download requested \(scope)")
+        do {
+            let result = try await downloadPartialContents(itemID: itemID, requestedRange: requestedRange, alignment: alignment)
+            await logger.info("partial download completed \(scope) durationMs=\(Int(Date().timeIntervalSince(start) * 1_000))")
+            return result
+        } catch {
+            await logger.error("partial download \((error is CancellationError || (error as? URLError)?.code == .cancelled) ? "cancelled" : "failed") \(scope) error=\(error)")
+            throw error
+        }
+    }
+
+    private func downloadPartialContents(itemID: String, requestedRange: ProviderContentRange, alignment: Int64) async throws -> PartialProviderContent {
         guard let stored = try await store.item(accountID: metadataID, id: itemID) else {
             throw WesomeCloudError.missingItem(itemID)
         }
@@ -518,6 +554,7 @@ public actor FileProviderCoordinator {
         defer { Task { await transferLimiter.release() } }
         do {
             try await checkTransferNotCancelled(itemID: itemID, transferID: transferID, direction: .download, localURL: destination, remotePath: stored.remote.path, totalBytes: range.length)
+            await logger.info("partial download started scope=\(metadataID) item=\(DiagnosticRedactor.reference(itemID)) transfer=\(transferID)")
             let response = try await webDAV.downloadRange(path: stored.remote.path, startingAt: range.offset, endingAt: end)
             try await checkTransferNotCancelled(itemID: itemID, transferID: transferID, direction: .download, localURL: destination, remotePath: stored.remote.path, totalBytes: range.length)
             if response.statusCode == 206 {
@@ -1046,6 +1083,7 @@ public actor FileProviderCoordinator {
     }
 
     public func pollRemoteChanges(parentID: String?, remotePath: String) async throws -> RemoteChangeSet {
+        await logger.info("poll requested scope=\(metadataID) path=\(DiagnosticRedactor.reference(remotePath))")
         if let syncToken = try await store.syncCursor(accountID: metadataID, remotePath: remotePath) {
             do {
                 return try await pollRemoteChangesWithSyncCollection(remotePath: remotePath, syncToken: syncToken)
@@ -1066,8 +1104,8 @@ public actor FileProviderCoordinator {
             existingItems: existingItems
         )
         let remoteIDs = Set(remoteItems.map(\.id))
-        let sample = fetched.prefix(5).map { "\($0.path)<-\($0.parentID ?? "nil")" }.joined(separator: ", ")
-        await logger.info("poll scope=\(metadataID) path=\(remotePath) parent=\(parentID ?? "root") fetched=\(fetched.count) children=\(remoteItems.count) sample=[\(sample)]")
+
+        await logger.info("poll scope=\(metadataID) path=\(DiagnosticRedactor.reference(remotePath)) parent=\(DiagnosticRedactor.reference(parentID ?? "root")) fetched=\(fetched.count) children=\(remoteItems.count)")
 
         let deletedRoots = cached
             .filter { !remoteIDs.contains($0.remote.id) }
@@ -1094,6 +1132,7 @@ public actor FileProviderCoordinator {
         let cachedByID = Dictionary(existingItems.map { ($0.remote.id, $0) }, uniquingKeysWith: { first, _ in first })
         let cachedByPath = Dictionary(existingItems.map { ($0.remote.path.normalizedRemotePath, $0) }, uniquingKeysWith: { first, _ in first })
         let report = try await webDAV.syncCollection(path: remotePath, syncToken: syncToken, depth: 1)
+        await logger.info("poll report scope=\(metadataID) path=\(DiagnosticRedactor.reference(remotePath)) fetched=\(report.items.count) deleted=\(report.deletedPaths.count)")
 
         let changedRemoteItems = try await reconcileRemoteChildren(
             report.items,

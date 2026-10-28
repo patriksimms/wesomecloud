@@ -443,14 +443,26 @@ func fileProviderRootItemPreservesSystemRootIdentifier() async throws {
 @Test
 func fileProviderExtensionRecordsCallbackDiagnostics() async throws {
     let diagnostics = MemoryDiagnosticSink()
-    let runtime = FileProviderExtensionRuntime(adapter: FileProviderAdapter(backend: ExtensionBackend()))
+    let backend = ExtensionBackend()
+    let runtime = FileProviderExtensionRuntime(adapter: FileProviderAdapter(backend: backend))
     let extensionInstance = WesomeFileProviderReplicatedExtension(runtime: runtime, diagnostics: diagnostics)
 
     _ = try await itemSnapshot(for: NSFileProviderItemIdentifier("root-file"), from: extensionInstance)
 
+    let template = WesomeFileProviderItem(item: ProviderItem(stored: StoredItem(remote:
+        RemoteItem(id: "template", parentID: nil, name: "Private Client Report.xlsx", path: "/Private Client Report.xlsx", kind: .file))))
+    _ = try await createItem(template, contents: nil, from: extensionInstance)
+    let badName = "prefix\"Private Client.xlsx."
+    await backend.failCreate(with: WesomeCloudError.invalidFilename(badName, .trailingWhitespaceOrPeriod))
+    let rejected = WesomeFileProviderItem(item: ProviderItem(stored: StoredItem(remote:
+        RemoteItem(id: "rejected", parentID: nil, name: badName, path: "/" + badName, kind: .file))))
+    await #expect(throws: Error.self) { _ = try await createItem(rejected, contents: nil, from: extensionInstance) }
     let messages = await diagnostics.events.map(\.message)
-    #expect(messages.contains("item requested id=root-file"))
-    #expect(messages.contains("item completed id=root-file"))
+    #expect(messages.contains { $0.hasPrefix("createItem failed") })
+    #expect(messages.contains { $0.hasPrefix("createItem requested filename=") })
+    #expect(!messages.contains { $0.contains("Private Client") || $0.contains("Report.xlsx") })
+    #expect(messages.contains("item requested id=\(DiagnosticRedactor.reference("root-file"))"))
+    #expect(messages.contains("item completed id=\(DiagnosticRedactor.reference("root-file"))"))
 }
 
 @Test
@@ -662,10 +674,12 @@ func fileProviderIncrementalFetchReusesExistingContentsWhenVersionMatches() asyn
     )
     await backend.setItem(item)
     let runtime = FileProviderExtensionRuntime(adapter: FileProviderAdapter(backend: backend))
-    let extensionInstance = WesomeFileProviderReplicatedExtension(runtime: runtime)
-    let existingURL = FileManager.default.temporaryDirectory
-        .appending(path: UUID().uuidString)
-        .appendingPathExtension("txt")
+    let diagnostics = MemoryDiagnosticSink()
+    let extensionInstance = WesomeFileProviderReplicatedExtension(runtime: runtime, diagnostics: diagnostics)
+    let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let existingURL = directory.appending(path: "Private Client Report.txt")
     try Data("same".utf8).write(to: existingURL)
     let currentVersion = NSFileProviderItemVersion(
         contentVersion: item.contentVersion,
@@ -682,6 +696,9 @@ func fileProviderIncrementalFetchReusesExistingContentsWhenVersionMatches() asyn
 
     #expect(fetchedURL == existingURL)
     #expect(await backend.fetchStarted == false)
+    let events = await diagnostics.events
+    #expect(events.contains { $0.message.hasPrefix("fetchIncrementalContents requested") })
+    #expect(!events.contains { $0.message.contains("Private Client") || $0.message.contains("Report.txt") })
 }
 
 @Test
@@ -1383,17 +1400,16 @@ func domainRuntimeResolverReportsMissingCredential() async throws {
     }
 }
 
-private func waitUntil(
-    timeoutNanoseconds: UInt64 = 1_000_000_000,
-    condition: @escaping () async -> Bool
-) async throws {
-    let start = ContinuousClock.now
+private func waitUntil(condition: @escaping () async -> Bool) async throws {
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    // These checks wait for state, not latency. Recheck after waking before timing out:
+    // a loaded CI runner can resume this task well after its requested sleep interval.
     while !(await condition()) {
-        try await Task.sleep(nanoseconds: 5_000_000)
-        if start.duration(to: .now) > .nanoseconds(Int64(timeoutNanoseconds)) {
+        guard ContinuousClock.now < deadline else {
             Issue.record("Timed out waiting for condition")
             return
         }
+        try await Task.sleep(for: .milliseconds(5))
     }
 }
 

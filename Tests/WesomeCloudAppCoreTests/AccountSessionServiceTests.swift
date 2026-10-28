@@ -175,7 +175,7 @@ func accountSessionServiceReconnectsExistingAccountIDWithNewCredential() async t
     #expect(stored?.username == "alice")
     #expect(stored?.secret == "new-secret")
     #expect(stored?.kind == .appPassword)
-    #expect(await diagnostics.events.first?.message == "Reconnected account alice")
+    #expect(await diagnostics.events.first?.message == "Reconnected account \(DiagnosticRedactor.reference("alice"))")
 }
 
 @Test
@@ -293,7 +293,7 @@ func accountSessionServiceStoresOAuthRefreshTokenAfterBearerCapabilityValidation
     let stored = try await credentials.credential(accountID: session.account.id)
     #expect(stored?.secret == "refresh-token")
     #expect(stored?.kind == .oauthRefreshToken)
-    #expect(await diagnostics.events.first?.message == "Added OAuth account oauth-user")
+    #expect(await diagnostics.events.first?.message == "Added OAuth account \(DiagnosticRedactor.reference("oauth-user"))")
 }
 
 @Test

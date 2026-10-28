@@ -166,9 +166,10 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
     private let containerIdentifier: String?
     private let anchorState = SyncAnchorState()
     private let taskRegistry = EnumeratorTaskRegistry()
-    private let logger = WesomeLogger(category: "FileProvider")
+    private let logger: WesomeLogger
 
     public init(adapter: FileProviderAdapter, itemCache: ExtensionItemCache? = nil, container: ProviderContainerReference) {
+        self.logger = WesomeLogger(category: "FileProvider")
         self.runtimeProvider = { FileProviderExtensionRuntime(adapter: adapter, itemCache: itemCache ?? ExtensionItemCache()) }
         self.container = container
         self.containerIdentifier = nil
@@ -176,6 +177,7 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
     }
 
     public init(adapter: FileProviderAdapter, itemCache: ExtensionItemCache, containerIdentifier: String) {
+        self.logger = WesomeLogger(category: "FileProvider")
         self.runtimeProvider = { FileProviderExtensionRuntime(adapter: adapter, itemCache: itemCache) }
         self.container = nil
         self.containerIdentifier = containerIdentifier
@@ -184,8 +186,10 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
 
     public init(
         runtimeProvider: @escaping @Sendable () async throws -> FileProviderExtensionRuntime,
-        containerIdentifier: String
+        containerIdentifier: String,
+        diagnostics: (any DiagnosticSink)? = nil
     ) {
+        self.logger = WesomeLogger(category: "FileProvider", sink: diagnostics)
         self.runtimeProvider = runtimeProvider
         self.container = nil
         self.containerIdentifier = containerIdentifier
@@ -206,7 +210,7 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
                 observer.didEnumerate(providerPage.items.map(WesomeFileProviderItem.init))
                 observer.finishEnumerating(upTo: providerPage.nextPageToken.map(NSFileProviderPage.providerPage))
             } catch {
-                await logger.error("enumerateItems failed container=\(containerIdentifier ?? "adapter") error=\(String(describing: error))")
+                await logger.error("enumerateItems failed container=\(DiagnosticRedactor.reference(containerIdentifier ?? "adapter")) error=\(String(describing: error))")
                 observer.finishEnumeratingWithError(error.asFileProviderNSError)
             }
         }
@@ -224,7 +228,7 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
                 observer.didDeleteItems(withIdentifiers: changes.deleted.map { NSFileProviderItemIdentifier($0) })
                 observer.finishEnumeratingChanges(upTo: anchorState.advance(), moreComing: false)
             } catch {
-                await logger.error("enumerateChanges failed container=\(containerIdentifier ?? "adapter") error=\(String(describing: error))")
+                await logger.error("enumerateChanges failed container=\(DiagnosticRedactor.reference(containerIdentifier ?? "adapter")) error=\(String(describing: error))")
                 observer.finishEnumeratingWithError(error.asFileProviderNSError)
             }
         }

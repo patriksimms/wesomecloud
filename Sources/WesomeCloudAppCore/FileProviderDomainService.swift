@@ -131,6 +131,10 @@ public actor FileProviderDomainService {
         self.diagnostics = diagnostics
     }
 
+    public func registeredDomainIDs() async throws -> [String] {
+        try await manager.domains().map(\.id).sorted()
+    }
+
     public func registerDomain(for session: AccountSession) async throws -> CloudDomain {
         let domain = CloudDomain(
             id: session.account.id.uuidString,
@@ -139,7 +143,7 @@ public actor FileProviderDomainService {
         )
         try await manager.register(domain)
         try await repository?.saveDomain(domain)
-        await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Registered domain \(domain.displayName)"))
+        await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Registered domain \(DiagnosticRedactor.reference(domain.displayName))"))
         return domain
     }
 
@@ -154,7 +158,7 @@ public actor FileProviderDomainService {
         )
         try await manager.register(domain)
         try await repository?.saveDomain(domain)
-        await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Registered space domain \(space.name)"))
+        await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Registered space domain \(DiagnosticRedactor.reference(space.name))"))
         return domain
     }
 
@@ -166,7 +170,7 @@ public actor FileProviderDomainService {
     public func removeDomain(_ domain: CloudDomain) async throws {
         try await manager.remove(domainID: domain.id)
         try await repository?.deleteDomain(id: domain.id)
-        await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Removed Finder location \(domain.displayName)"))
+        await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Removed Finder location \(DiagnosticRedactor.reference(domain.displayName))"))
     }
 
     public func authenticationSucceeded(for selections: [CloudDomain]) async throws {
@@ -190,7 +194,7 @@ public actor FileProviderDomainService {
         for domain in selections {
             if !registered.contains(domain.id) {
                 try await manager.register(domain)
-                await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Restored Finder location \(domain.displayName)"))
+                await diagnostics?.record(DiagnosticEvent(category: "FileProviderDomain", level: .info, message: "Restored Finder location \(DiagnosticRedactor.reference(domain.displayName))"))
             }
             // Refresh cached metadata, including capabilities changed by an app update.
             try await changeSignaler?.signalEnumerator(domainID: domain.id, containerItemIdentifier: "NSFileProviderWorkingSetContainerItemIdentifier")

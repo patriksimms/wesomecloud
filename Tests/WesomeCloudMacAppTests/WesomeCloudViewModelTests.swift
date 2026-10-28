@@ -1,3 +1,4 @@
+import SQLite3
 import Foundation
 import OwnCloudKit
 import SyncStore
@@ -1292,13 +1293,23 @@ func viewModelLoadsAndSummarizesAccountStorage() async throws {
 @MainActor
 @Test
 func viewModelExportsDiagnostics() async throws {
+    let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let databaseURL = directory.appending(path: "Metadata.sqlite")
+    let store = try SQLiteMetadataStore(databaseURL: databaseURL)
+    var database: OpaquePointer?
+    try #require(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+    defer { sqlite3_close(database) }
+    try #require(sqlite3_exec(database, "DROP TABLE sync_errors", nil, nil, nil) == SQLITE_OK)
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
     let appModel = WesomeCloudAppModel(
         accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
         domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
-        repository: MemoryAccountRepository()
+        repository: MemoryAccountRepository(records: [PersistedAccountRecord(account: account)]),
+        metadataStore: store
     )
     let viewModel = WesomeCloudViewModel(model: appModel)
-    let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
 
     await viewModel.exportDiagnostics(to: directory)
 

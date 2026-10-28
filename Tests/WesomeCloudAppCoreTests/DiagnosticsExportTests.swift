@@ -2,6 +2,8 @@ import Foundation
 import Testing
 import WesomeCloudAppCore
 import WesomeCloudShared
+import SyncStore
+import SQLite3
 
 @Test
 func diagnosticsExporterWritesRedactedBundle() async throws {
@@ -31,13 +33,13 @@ func diagnosticsExporterWritesRedactedBundle() async throws {
 
     let url = try exporter.export(snapshot: snapshot, preferences: AppPreferences(), to: directory)
 
-    #expect(url.lastPathComponent == "wesomecloud-diagnostics-123.json")
-    let data = try Data(contentsOf: url)
+    #expect(url.pathExtension == "zip")
+    let data = try diagnosticJSON(in: url)
     let decoder = JSONDecoder()
     decoder.dateDecodingStrategy = .iso8601
     let bundle = try decoder.decode(DiagnosticsExportBundle.self, from: data)
     #expect(bundle.accounts.first?.serverHost == "cloud.example")
-    #expect(bundle.accounts.first?.username == "alice")
+    #expect(bundle.accounts.first?.username == DiagnosticRedactor.reference("alice"))
     #expect(bundle.events.first?.message.contains("secret") == false)
     #expect(bundle.events.first?.message.contains("[REDACTED]") == true)
     #expect(bundle.crashReports.first?.reason.contains("abc123") == false)
@@ -210,4 +212,105 @@ func appModelImportsDiagnosticCrashReportsWhenLoadingSnapshot() async throws {
     #expect(snapshot.diagnostics.contains { $0.category == "Crash" && $0.message.contains("Imported 1 macOS crash report") })
     #expect(refreshed.crashReports.count == 1)
     #expect(refreshed.diagnostics.filter { $0.category == "Crash" && $0.message.contains("Imported") }.count == 1)
+}
+
+// Exercise the archive as a consumer would, independently of our serialization code.
+private func diagnosticJSON(in archive: URL) throws -> Data {
+    func unzip(_ arguments: [String]) throws -> Data {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
+        process.arguments = arguments
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try process.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        return data
+    }
+    let listing = String(decoding: try unzip(["-Z1", archive.path]), as: UTF8.self)
+    let entry = try #require(listing.split(separator: "\n").first { $0.hasSuffix("diagnostics.json") })
+    return try unzip(["-p", archive.path, String(entry)])
+}
+
+@Test
+func diagnosticsExportIncludesRestartHistoryAndSanitizedPersistedState() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WesomeCloudPaths(root: root)
+    try paths.ensureDirectories()
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "private-user")
+    let domain = CloudDomain(id: "selected-space", accountID: account.id, displayName: "Private Client")
+    let record = PersistedAccountRecord(account: account, domain: domain, lastSyncStatus: SyncStatusSnapshot(message: "Selected Private Client for Finder"))
+    let store = try SQLiteMetadataStore(databaseURL: paths.database)
+    let operation = PendingOperation(kind: .upload, itemID: "private-item", sourcePath: "/Users/private/report.xlsx", destinationPath: "/Clients/private/report.xlsx", lastErrorDescription: "token=secret")
+    try await store.enqueue(operation, accountID: record.metadataID)
+    try await store.recordSyncError(SyncErrorRecord(scope: .item, itemID: operation.itemID, message: "failed /Clients/private/report.xlsx", isRecoverable: true), accountID: record.metadataID)
+    try await store.upsertTransfer(TransferRecord(itemID: operation.itemID, direction: .download, phase: .failed,
+                                                 localURL: URL(fileURLWithPath: "/Users/private/report.xlsx"), remotePath: "/Clients/private/report.xlsx"), accountID: record.metadataID)
+    let journal = PersistentDiagnosticLog(directory: paths.logs)
+    try journal.append(DiagnosticEvent(category: "RemotePoll", level: .info, message: "Checked 3 folders", context: ["scope": record.metadataID.uuidString, "outcome": "success", "polled": "true"]))
+    let buffer = AppDiagnosticBuffer(journal: PersistentDiagnosticLog(directory: paths.logs))
+    await buffer.record(DiagnosticEvent(date: Date().addingTimeInterval(-8 * 86_400), category: "Test", level: .info, message: "expired-event"))
+    let repository = MemoryAccountRepository(records: [record])
+    let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
+                                   domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+                                   repository: repository, metadataStore: store,
+                                   diagnostics: buffer)
+    let archive = try await model.exportDiagnostics(to: root)
+    let data = try diagnosticJSON(in: archive)
+    let text = String(decoding: data, as: UTF8.self)
+    for secret in ["private-user", "private-item", "Private Client", "report.xlsx", "secret", "expired-event"] { #expect(!text.contains(secret)) }
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let bundle = try decoder.decode(DiagnosticsExportBundle.self, from: data)
+    #expect(bundle.pendingOperations?.first?.operation.attemptCount == 0)
+    #expect(bundle.syncErrors?.count == 1)
+    #expect(bundle.transfers?.first?.transfer.localURL == nil)
+    #expect(bundle.scopes?.first?.lastSuccessfulPoll?.message == "Checked 3 folders")
+    #expect(bundle.environment?.registeredDomainIDs == [])
+    var removed = record
+    removed.domains = []
+    removed.lastSyncStatus.message = "Removed Private Client from Finder"
+    try await repository.save(removed)
+    let afterRemoval = try diagnosticJSON(in: await model.exportDiagnostics(to: root))
+    #expect(!String(decoding: afterRemoval, as: UTF8.self).contains("Private Client"))
+}
+
+@Test
+func diagnosticsExportPreservesAvailableEvidenceWhenLocalSourcesFail() async throws {
+    let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let paths = WesomeCloudPaths(root: root)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    // A file where the journal directory belongs reproduces a real filesystem failure.
+    try Data().write(to: paths.logs)
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let record = PersistedAccountRecord(account: account)
+    let store = try SQLiteMetadataStore(databaseURL: paths.database)
+    try await store.upsertTransfer(TransferRecord(itemID: "item", direction: .download, phase: .failed, remotePath: "/report.xlsx"), accountID: record.metadataID)
+    // Corrupt only the queue table in this disposable database; other sources still work.
+    var database: OpaquePointer?
+    try #require(sqlite3_open(paths.database.path, &database) == SQLITE_OK)
+    defer { sqlite3_close(database) }
+    try #require(sqlite3_exec(database, "DROP TABLE pending_operations", nil, nil, nil) == SQLITE_OK)
+    let health = FileProviderHealthStore(paths: paths)
+    try FileManager.default.createDirectory(at: root.appending(path: "FileProviderHealth/\(account.id).json"), withIntermediateDirectories: true)
+    let buffer = AppDiagnosticBuffer(journal: PersistentDiagnosticLog(directory: paths.logs))
+    await buffer.record(DiagnosticEvent(category: "Test", level: .info, message: "available evidence"))
+    await buffer.record(DiagnosticEvent(date: Date().addingTimeInterval(-8 * 86_400), category: "Test", level: .info, message: "expired evidence"))
+    let model = WesomeCloudAppModel(accountSessions: AccountSessionService(credentialStore: MemoryCredentialStore()),
+                                   domains: FileProviderDomainService(manager: MemoryFileProviderDomainManager()),
+                                   repository: MemoryAccountRepository(records: [record]), metadataStore: store, fileProviderHealth: health, diagnostics: buffer)
+    let archive = try await model.exportDiagnostics(to: root)
+    let data = try diagnosticJSON(in: archive)
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let bundle = try decoder.decode(DiagnosticsExportBundle.self, from: data)
+    #expect(bundle.events.map(\.message) == ["available evidence"])
+    #expect(bundle.transfers?.count == 1)
+    #expect(bundle.environment?.collectionErrors?["journal"] != nil)
+    #expect(bundle.environment?.collectionErrors?["pendingOperations:" + record.metadataID.uuidString] != nil)
+    #expect(bundle.environment?.collectionErrors?["fileProviderHealth:" + account.id.uuidString] != nil)
+    #expect(!String(decoding: data, as: UTF8.self).contains(root.path))
 }

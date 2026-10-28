@@ -251,13 +251,14 @@ public struct ProductionAppFactory: Sendable {
             changeSignaler: UnifiedFileProviderChangeSignaler(signaler: Self.systemChangeSignaler()),
             configurationProvider: {
                 try await components.preferencesRepository.load().sync.backgroundSyncConfiguration
-            }
+            },
+            diagnostics: PersistentDiagnosticLog(directory: paths.logs)
         )
     }
 
     private func makeComponents() throws -> ProductionAppComponents {
         try paths.ensureDirectories()
-        let diagnostics = AppDiagnosticBuffer(limit: diagnosticsLimit)
+        let diagnostics = AppDiagnosticBuffer(limit: diagnosticsLimit, journal: PersistentDiagnosticLog(directory: paths.logs))
         let credentials = KeychainCredentialStore()
         let metadataStore = try SQLiteMetadataStore(databaseURL: paths.database)
         let accountRepository = MigratingAccountRepository(

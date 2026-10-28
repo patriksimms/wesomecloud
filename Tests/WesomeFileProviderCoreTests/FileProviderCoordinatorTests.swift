@@ -317,11 +317,13 @@ func fetchContentsHonorsCancelledTransferBeforeNetworkCall() async throws {
         RemoteItem(id: "file-1", parentID: nil, name: "Readme.md", path: "/Readme.md", kind: .file, size: 8)
     ])
     let transport = FixtureTransport([(Data("contents".utf8), 200)])
+    let diagnostics = MemoryDiagnosticSink()
     let coordinator = FileProviderCoordinator(
         account: account,
         webDAV: WebDAVClient(baseURL: URL(string: "https://cloud.example/remote.php/dav/files/alice/")!, transport: transport),
         store: store,
-        materializationDirectory: FileManager.default.temporaryDirectory
+        materializationDirectory: FileManager.default.temporaryDirectory,
+        diagnostics: diagnostics
     )
 
     await coordinator.cancelTransfers(for: "file-1")
@@ -333,6 +335,9 @@ func fetchContentsHonorsCancelledTransferBeforeNetworkCall() async throws {
     let transfers = try await store.transfers(accountID: account.id)
     #expect(transfers.first?.phase == .paused)
     #expect(transfers.first?.lastErrorDescription == "Transfer cancelled")
+    let events = await diagnostics.events
+    #expect(events.first?.message.hasPrefix("download requested ") == true)
+    #expect(events.last?.message.hasPrefix("download cancelled ") == true)
 }
 
 @Test
@@ -385,11 +390,13 @@ func fetchContentsDownloadsAndMaterializesFile() async throws {
         )
     ])
     let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    let diagnostics = MemoryDiagnosticSink()
     let coordinator = FileProviderCoordinator(
         account: account,
         webDAV: WebDAVClient(baseURL: URL(string: "https://cloud.example/remote.php/dav/files/alice/")!, transport: FixtureTransport([(Data("contents".utf8), 200)])),
         store: store,
-        materializationDirectory: directory
+        materializationDirectory: directory,
+        diagnostics: diagnostics
     )
 
     let url = try await coordinator.fetchContents(itemID: "file/1")
@@ -401,6 +408,9 @@ func fetchContentsDownloadsAndMaterializesFile() async throws {
     #expect(transfers.first?.phase == .completed)
     #expect(transfers.first?.bytesTransferred == 8)
     #expect(transfers.first?.remotePath == "/Readme.md")
+    let events = await diagnostics.events
+    #expect(events.first?.message.hasPrefix("download requested ") == true)
+    #expect(events.last?.message.hasPrefix("download completed ") == true)
 }
 
 @Test
@@ -468,11 +478,13 @@ func fetchContentsRejectsUnexpectedDownloadSize() async throws {
         RemoteItem(id: "file-1", parentID: nil, name: "Readme.md", path: "/Readme.md", kind: .file, size: 9)
     ])
     let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+    let diagnostics = MemoryDiagnosticSink()
     let coordinator = FileProviderCoordinator(
         account: account,
         webDAV: WebDAVClient(baseURL: URL(string: "https://cloud.example/remote.php/dav/files/alice/")!, transport: FixtureTransport([(Data("contents".utf8), 200)])),
         store: store,
-        materializationDirectory: directory
+        materializationDirectory: directory,
+        diagnostics: diagnostics
     )
 
     await #expect(throws: WesomeCloudError.transferIntegrityMismatch("Expected 9 bytes for /Readme.md, got 8")) {
@@ -482,6 +494,9 @@ func fetchContentsRejectsUnexpectedDownloadSize() async throws {
     let transfers = try await store.transfers(accountID: account.id)
     #expect(transfers.first?.phase == .failed)
     #expect(transfers.first?.bytesTransferred == 8)
+    let events = await diagnostics.events
+    #expect(events.first?.message.hasPrefix("download requested ") == true)
+    #expect(events.last?.message.hasPrefix("download failed ") == true)
 }
 
 @Test

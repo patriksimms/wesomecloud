@@ -58,6 +58,7 @@ public struct DiagnosticEvent: Codable, Equatable, Sendable, Identifiable {
     public var category: String
     public var level: DiagnosticLevel
     public var message: String
+    public var context: [String: String]?
 
     public init(
         id: UUID = UUID(),
@@ -65,7 +66,8 @@ public struct DiagnosticEvent: Codable, Equatable, Sendable, Identifiable {
         subsystem: String = "WesomeCloud",
         category: String,
         level: DiagnosticLevel,
-        message: String
+        message: String,
+        context: [String: String]? = nil
     ) {
         self.id = id
         self.date = date
@@ -73,6 +75,7 @@ public struct DiagnosticEvent: Codable, Equatable, Sendable, Identifiable {
         self.category = category
         self.level = level
         self.message = message
+        self.context = context
     }
 }
 
@@ -109,17 +112,17 @@ public struct WesomeLogger: Sendable {
     }
 
     public func info(_ message: String) async {
-        logger.info("\(message, privacy: .public)")
+        logger.info("\(DiagnosticRedactor.redact(message), privacy: .public)")
         await sink?.record(DiagnosticEvent(category: category, level: .info, message: message))
     }
 
     public func warning(_ message: String) async {
-        logger.warning("\(message, privacy: .public)")
+        logger.warning("\(DiagnosticRedactor.redact(message), privacy: .public)")
         await sink?.record(DiagnosticEvent(category: category, level: .warning, message: message))
     }
 
     public func error(_ message: String) async {
-        logger.error("\(message, privacy: .public)")
+        logger.error("\(DiagnosticRedactor.redact(message), privacy: .public)")
         await sink?.record(DiagnosticEvent(category: category, level: .error, message: message))
     }
 }

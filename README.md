@@ -112,3 +112,18 @@ purpose. See [LICENSE](LICENSE) for the full text.
 Upstream copyright and license notices remain applicable to copied or adapted
 material. Sparkle and its bundled components retain their own licenses, reproduced
 in [docs/Sparkle-LICENSE.txt](docs/Sparkle-LICENSE.txt).
+
+### Troubleshooting sync and downloads
+
+Use **Sync Now** in the main window to request a check of selected Spaces, then
+**Export Diagnostics** to create a ZIP you can inspect and share with support.
+A check follows changed folders; it is not a full scan of every server folder.
+The status shows the number of folders checked and the time of the latest result.
+
+The app and File Provider extension keep a shared local diagnostic journal for up
+to seven days, capped at 10 MiB. It survives app restarts and does not depend on
+usage-tracking consent. The ZIP includes that history, app/macOS versions, selected
+Space references, Finder registration/health, sync errors, queued operations and
+transfer summaries. Paths, account names and item identifiers use stable hashed
+references; credentials and file contents are excluded. Server hostnames remain
+visible. Logs from before this version cannot be recovered by the export.
