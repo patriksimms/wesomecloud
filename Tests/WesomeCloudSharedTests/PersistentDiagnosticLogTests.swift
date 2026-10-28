@@ -60,6 +60,9 @@ func diagnosticJournalExpiresOldSegmentsAndBoundsDiskUsage() throws {
     "Authorization: Bearer abc.def.ghi", "access_token=abc123", "password: abc123",
     "URL https://example.test/download?secret=abc123", "file /Users/private/Client Report.xlsx",
     "Error Domain=Test UserInfo={NSFilePath=\"Client Report.xlsx\"}",
+    "The file “Client Report.xlsx” couldn’t be opened.",
+    "Die Datei „Client Report.xlsx“ konnte nicht geöffnet werden.",
+    "The file “Client “private” Report.xlsx” couldn’t be opened.",
     String(describing: WesomeCloudError.invalidFilename("prefix\"Client Report.xlsx.", .trailingWhitespaceOrPeriod)),
 ])
 func diagnosticRedactionRemovesPrivateValues(_ message: String) {
