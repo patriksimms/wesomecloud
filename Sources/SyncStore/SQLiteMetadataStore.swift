@@ -674,11 +674,15 @@ public final class SQLiteMetadataStore: MetadataStore, @unchecked Sendable {
     /// across processes. Building both presentations inside the transaction prevents
     /// metadata writes from slipping between the comparison and its journal entries.
     public func reconcileProviderPresentation(scope: String, configuration: Data, changes: (Data?) throws -> [ProviderPresentationChange]) throws {
-        try transaction {
-            let previous = try withStatement("SELECT configuration FROM provider_presentations WHERE scope = ?") { statement in
+        func storedConfiguration() throws -> Data? {
+            try withStatement("SELECT configuration FROM provider_presentations WHERE scope = ?") { statement in
                 bind(scope, to: statement, at: 1)
                 return try step(statement) ? columnData(statement, "configuration") : nil
             }
+        }
+        guard try storedConfiguration() != configuration else { return }
+        try transaction {
+            let previous = try storedConfiguration()
             guard previous != configuration else { return }
             for change in try changes(previous) {
                 try execute("UPDATE provider_journal_state SET position = position + 1 WHERE id = 1")
@@ -710,7 +714,7 @@ public final class SQLiteMetadataStore: MetadataStore, @unchecked Sendable {
 
     public func providerChanges(after position: Int64, through upperBound: Int64, limit: Int) throws -> [StoredProviderChange] {
         var result: [StoredProviderChange] = []
-        try transaction {
+        try transaction(readOnly: true) {
             let state = try providerJournalState()
             guard position >= state.floor, position <= upperBound, upperBound <= state.position else { throw ProviderJournalError.expired }
             try withStatement("SELECT * FROM provider_changes WHERE sequence > ? AND sequence <= ? ORDER BY sequence LIMIT ?") { statement in
@@ -752,10 +756,10 @@ public final class SQLiteMetadataStore: MetadataStore, @unchecked Sendable {
         }
     }
 
-    private func transaction(_ body: () throws -> Void) throws {
+    private func transaction(readOnly: Bool = false, _ body: () throws -> Void) throws {
         lock.lock()
         defer { lock.unlock() }
-        try execute("BEGIN IMMEDIATE")
+        try execute(readOnly ? "BEGIN" : "BEGIN IMMEDIATE")
         do {
             try body()
             try execute("COMMIT")

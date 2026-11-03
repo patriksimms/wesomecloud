@@ -699,3 +699,23 @@ func sqliteJournalBoundsRetentionAndRejectsExpiredPositionsAcrossReopen() async 
     #expect(retained.count == 1000)
     #expect(try await reopened.item(accountID: account, id: "file")?.remote.etag == "100000")
 }
+
+@Test
+func sqliteJournalReadersRemainAvailableWhileAnotherConnectionWrites() async throws {
+    let url = temporaryDatabaseURL()
+    let store = try SQLiteMetadataStore(databaseURL: url)
+    let configuration = Data("configuration".utf8)
+    try store.reconcileProviderPresentation(scope: "finder", configuration: configuration) { _ in [] }
+    let state = try store.providerJournalState()
+    var writer: OpaquePointer?
+    #expect(sqlite3_open(url.path, &writer) == SQLITE_OK)
+    let connection = try #require(writer)
+    defer { sqlite3_exec(connection, "ROLLBACK", nil, nil, nil); sqlite3_close(connection) }
+    #expect(sqlite3_exec(connection, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+    // Neither operation changes metadata, so WAL readers must not wait for the writer.
+    #expect(try store.providerChanges(after: state.position, through: state.position, limit: 200).isEmpty)
+    try store.reconcileProviderPresentation(scope: "finder", configuration: configuration) { _ in
+        Issue.record("Unchanged presentation must not be regenerated")
+        return []
+    }
+}
