@@ -320,10 +320,10 @@ public actor ProductionDomainRuntimeResolver {
 
     public func makeRuntime(domainID: String) async throws -> FileProviderExtensionRuntime {
         if domainID == ProviderSpaceIdentifier.domainID {
-            let backend = SpaceFileProviderBackend(spaces: { try await self.selectedSpaces() })
             let cache = ExtensionItemCache()
             try factory.paths.ensureDirectories()
             let store = try SQLiteMetadataStore(databaseURL: factory.paths.database)
+            let backend = SpaceFileProviderBackend(journalStore: store, spaces: { try await self.selectedSpaces() })
             let records = try await accounts.records()
             let folders = try await backend.enumerate(parentID: nil, remotePath: "/")
             for folder in folders {

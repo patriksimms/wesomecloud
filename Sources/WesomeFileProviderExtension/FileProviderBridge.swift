@@ -1,6 +1,7 @@
 import Foundation
 import WesomeFileProviderCore
 import WesomeCloudShared
+import SyncStore
 
 #if canImport(FileProvider)
 @preconcurrency import FileProvider
@@ -164,7 +165,7 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
     private let runtimeProvider: @Sendable () async throws -> FileProviderExtensionRuntime
     private let container: ProviderContainerReference?
     private let containerIdentifier: String?
-    private let anchorState = SyncAnchorState()
+    private let anchorState = InitialSyncAnchorState()
     private let taskRegistry = EnumeratorTaskRegistry()
     private let logger: WesomeLogger
 
@@ -205,7 +206,11 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
             do {
                 let runtime = try await runtimeProvider()
                 let container = await resolvedContainer(itemCache: runtime.itemCache)
-                let providerPage = try await runtime.adapter.enumerate(container: container, pageToken: page.providerPageToken)
+                // Capture the boundary before listing. Every concurrent mutation remains replayable.
+                _ = try await anchorState.initial { try await runtime.adapter.currentSyncAnchor(in: container) }
+                let providerPage = try await runtime.adapter.enumerate(container: container, pageToken: page.providerPageToken, pageSize: observer.suggestedPageSize)
+                try Task.checkCancellation()
+                await logger.info("initial enumeration items=\(providerPage.items.count) continuation=\(providerPage.nextPageToken != nil)")
                 await runtime.itemCache.register(providerPage, container: container)
                 observer.didEnumerate(providerPage.items.map(WesomeFileProviderItem.init))
                 observer.finishEnumerating(upTo: providerPage.nextPageToken.map(NSFileProviderPage.providerPage))
@@ -222,12 +227,17 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
             do {
                 let runtime = try await runtimeProvider()
                 let container = await resolvedContainer(itemCache: runtime.itemCache)
-                let changes = try await runtime.adapter.changes(in: container)
-                await runtime.itemCache.register(ProviderPage(items: changes.added + changes.updated), container: container)
-                observer.didUpdate(changes.added.map(WesomeFileProviderItem.init) + changes.updated.map(WesomeFileProviderItem.init))
+                let changes = try await runtime.adapter.changePage(in: container, from: syncAnchor.rawValue, pageSize: observer.suggestedBatchSize ?? 200)
+                try Task.checkCancellation()
+                await runtime.itemCache.register(ProviderPage(items: changes.updated), container: container)
+                observer.didUpdate(changes.updated.map(WesomeFileProviderItem.init))
                 observer.didDeleteItems(withIdentifiers: changes.deleted.map { NSFileProviderItemIdentifier($0) })
-                observer.finishEnumeratingChanges(upTo: anchorState.advance(), moreComing: false)
+                observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(changes.anchor), moreComing: changes.moreComing)
+                await logger.info("incremental delivered updates=\(changes.updated.count) deletions=\(changes.deleted.count) position=\(changes.position) upper=\(changes.upperBound) continuation=\(changes.moreComing)")
             } catch {
+                if error is ProviderJournalError {
+                    await logger.warning("incremental recovery=syncAnchorExpired freshEnumerationRequired=true")
+                }
                 await logger.error("enumerateChanges failed container=\(DiagnosticRedactor.reference(containerIdentifier ?? "adapter")) error=\(String(describing: error))")
                 observer.finishEnumeratingWithError(error.asFileProviderNSError)
             }
@@ -236,7 +246,19 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
     }
 
     public func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        completionHandler(anchorState.current())
+        let completion = AnchorCompletionBox(completionHandler)
+        let task = Task<Void, Never> {
+            do {
+                let runtime = try await runtimeProvider()
+                let container = await resolvedContainer(itemCache: runtime.itemCache)
+                let anchor = try await anchorState.initial { try await runtime.adapter.currentSyncAnchor(in: container) }
+                completion.call(NSFileProviderSyncAnchor(anchor))
+            } catch {
+                await logger.error("initial anchor failed error=\(error)")
+                completion.call(nil)
+            }
+        }
+        taskRegistry.insert(task)
     }
 
     private func resolvedContainer(itemCache: ExtensionItemCache) async -> ProviderContainerReference {
@@ -291,30 +313,34 @@ private final class EnumeratorTaskRegistry: @unchecked Sendable {
     }
 }
 
-private final class SyncAnchorState: @unchecked Sendable {
-    private let lock = NSLock()
-    private var version = 0
+private final class AnchorCompletionBox: @unchecked Sendable {
+    private let callback: (NSFileProviderSyncAnchor?) -> Void
+    init(_ callback: @escaping (NSFileProviderSyncAnchor?) -> Void) { self.callback = callback }
+    func call(_ anchor: NSFileProviderSyncAnchor?) { callback(anchor) }
+}
 
-    func current() -> NSFileProviderSyncAnchor {
-        lock.lock()
-        defer { lock.unlock() }
-        return anchor(for: version)
-    }
+/// Retain the pre-listing boundary for this enumerator. A later currentSyncAnchor
+/// callback must not acknowledge writes that arrived while its listing was paginated.
+private actor InitialSyncAnchorState {
+    private var task: Task<Data, Error>?
 
-    func advance() -> NSFileProviderSyncAnchor {
-        lock.lock()
-        defer { lock.unlock() }
-        version += 1
-        return anchor(for: version)
-    }
-
-    private func anchor(for version: Int) -> NSFileProviderSyncAnchor {
-        Data("v\(version)".utf8) as NSData as NSFileProviderSyncAnchor
+    func initial(_ load: @escaping @Sendable () async throws -> Data) async throws -> Data {
+        if let task { return try await task.value }
+        let task = Task { try await load() }
+        self.task = task
+        do { return try await task.value }
+        catch { self.task = nil; throw error }
     }
 }
 
 extension Error {
     var asFileProviderNSError: NSError {
+        if self is ProviderJournalError {
+            return .fileProvider(.syncAnchorExpired)
+        }
+        if self is ProviderEnumerationError {
+            return .fileProvider(.pageExpired)
+        }
         if self is CancellationError {
             return NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError)
         }
@@ -393,7 +419,9 @@ private extension NSError {
 private extension NSFileProviderPage {
     var providerPageToken: String? {
         let data = rawValue
-        guard !data.isEmpty else { return nil }
+        guard !data.isEmpty,
+              data != NSFileProviderPage.initialPageSortedByName as Data,
+              data != NSFileProviderPage.initialPageSortedByDate as Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
 

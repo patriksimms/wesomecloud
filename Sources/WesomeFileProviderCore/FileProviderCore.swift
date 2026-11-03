@@ -4,7 +4,7 @@ import OwnCloudKit
 import SyncStore
 import WesomeCloudShared
 
-public struct ProviderItem: Equatable, Sendable, Identifiable {
+public struct ProviderItem: Codable, Equatable, Sendable, Identifiable {
     public var id: String
     public var parentID: String?
     public var filename: String
@@ -277,7 +277,7 @@ public struct TransferProgressSummary: Equatable, Sendable {
     }
 }
 
-public struct FileProviderPresentationPolicy: Equatable, Sendable {
+public struct FileProviderPresentationPolicy: Codable, Equatable, Sendable {
     public var showHiddenFiles: Bool
     public var defaultAvailabilityIntent: AvailabilityIntent
     public var ignoredFilenamePatterns: [String]
@@ -308,13 +308,13 @@ public struct FileProviderPresentationPolicy: Equatable, Sendable {
 }
 
 public actor FileProviderCoordinator {
-    private let metadataID: UUID
+    let metadataID: UUID
     private let webDAV: WebDAVClient
-    private let store: MetadataStore
+    let store: MetadataStore
     private let materializationDirectory: URL
     private let syncPolicy: SyncPolicy
     private let uploadConfiguration: UploadConfiguration
-    private let presentationPolicy: FileProviderPresentationPolicy
+    let presentationPolicy: FileProviderPresentationPolicy
     private let transferLimiter: TransferLimiter
     private var cancelledItemIDs: Set<String> = []
     private let logger: WesomeLogger

@@ -78,45 +78,6 @@ private actor StubProviderBackend: FileProviderBackend, FileProviderWorkingSetPr
     }
 }
 
-private actor CustomWorkingSetChangeBackend: FileProviderBackend, FileProviderWorkingSetChangeProviding {
-    var items: [ProviderItem]
-    var calls: [String] = []
-    var customChanges = RemoteChangeSet()
-
-    init(items: [ProviderItem]) {
-        self.items = items
-    }
-
-    func enumerate(parentID _: String?, remotePath _: String) async throws -> [ProviderItem] { items }
-    func item(itemID: String) async throws -> ProviderItem? { items.first { $0.id == itemID } }
-    func fetchContents(itemID _: String) async throws -> URL { FileManager.default.temporaryDirectory }
-    func uploadModifiedContents(itemID _: String, contentsAt _: URL) async throws -> ProviderItem { items[0] }
-    func createFile(named _: String, contentsAt _: URL, parentPath _: String, parentID _: String?) async throws -> ProviderItem { items[0] }
-    func createFolder(named _: String, parentPath _: String, parentID _: String?) async throws -> ProviderItem { items[0] }
-    func delete(itemID _: String) async throws {}
-    func move(itemID _: String, to _: String) async throws -> ProviderItem { items[0] }
-    func pollRemoteChanges(parentID _: String?, remotePath _: String) async throws -> RemoteChangeSet { RemoteChangeSet() }
-    func setAvailabilityIntent(_: AvailabilityIntent, itemID: String, includeDescendants _: Bool) async throws -> [String] { [itemID] }
-    func evictMaterializedContentForDiskPressure() async throws -> [String] { [] }
-
-    func workingSetItems() async throws -> [ProviderItem] {
-        calls.append("workingSet")
-        return items
-    }
-
-    func workingSetChanges(previousItems: [ProviderItem]) async throws -> RemoteChangeSet {
-        calls.append("workingSetChanges:\(previousItems.map(\.id).joined(separator: ","))")
-        return customChanges
-    }
-
-    func setItems(_ items: [ProviderItem]) {
-        self.items = items
-    }
-
-    func setCustomChanges(_ changes: RemoteChangeSet) {
-        customChanges = changes
-    }
-}
 
 @Test
 func adapterMapsContainersAndDelegatesCallbacks() async throws {
@@ -236,7 +197,7 @@ func adapterSlicesEnumerationIntoStablePages() async throws {
     let first = try await adapter.enumerate(container: .root)
     let second = try await adapter.enumerate(container: .root, pageToken: first.nextPageToken)
     let third = try await adapter.enumerate(container: .root, pageToken: second.nextPageToken)
-    let empty = try await adapter.enumerate(container: .root, pageToken: "99")
+    await #expect(throws: ProviderEnumerationError.self) { try await adapter.enumerate(container: .root, pageToken: "99") }
 
     #expect(first.items.map(\.id) == ["item-0", "item-1"])
     #expect(first.nextPageToken != nil)
@@ -244,8 +205,6 @@ func adapterSlicesEnumerationIntoStablePages() async throws {
     #expect(second.nextPageToken != nil)
     #expect(third.items.map(\.id) == ["item-4"])
     #expect(third.nextPageToken == nil)
-    #expect(empty.items.isEmpty)
-    #expect(empty.nextPageToken == nil)
 }
 
 @Test
@@ -326,119 +285,13 @@ func adapterBoundsAbandonedPageSnapshots() async throws {
     await backend.setItems(pageItems(prefix: "fresh"))
 
     let retained = try await adapter.enumerate(container: .root, pageToken: secondToken)
-    let evicted = try await adapter.enumerate(container: .root, pageToken: firstToken)
+    await #expect(throws: ProviderEnumerationError.self) { try await adapter.enumerate(container: .root, pageToken: firstToken) }
 
     #expect(first.items.map(\.id) == ["first-0"])
     #expect(second.items.map(\.id) == ["second-0"])
     #expect(third.items.map(\.id) == ["third-0"])
     #expect(retained.items.map(\.id) == ["second-1"])
-    #expect(evicted.items.map(\.id) == ["fresh-0"])
-    #expect(await backend.calls.filter { $0 == "enumerate:nil:/" }.count == 4)
-}
-
-@Test
-func adapterComputesWorkingSetChangesFromStoredWorkingSetSnapshots() async throws {
-    let existing = ProviderItem(
-        id: "existing",
-        parentID: nil,
-        filename: "Existing.txt",
-        kind: .file,
-        size: 1,
-        contentVersion: Data("v1".utf8),
-        metadataVersion: Data("m1".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    let removed = ProviderItem(
-        id: "removed",
-        parentID: nil,
-        filename: "Removed.txt",
-        kind: .file,
-        size: 2,
-        contentVersion: Data("v1".utf8),
-        metadataVersion: Data("m1".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    let updated = ProviderItem(
-        id: "existing",
-        parentID: nil,
-        filename: "Existing.txt",
-        kind: .file,
-        size: 3,
-        contentVersion: Data("v2".utf8),
-        metadataVersion: Data("m2".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    let added = ProviderItem(
-        id: "added",
-        parentID: "folder",
-        filename: "Added.txt",
-        kind: .file,
-        size: 4,
-        path: "/Folder/Added.txt",
-        contentVersion: Data("v1".utf8),
-        metadataVersion: Data("m1".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    let backend = StubProviderBackend(items: [existing, removed])
-    let adapter = FileProviderAdapter(backend: backend)
-
-    _ = try await adapter.enumerate(container: .workingSet)
-    await backend.setItems([updated, added])
-    let changes = try await adapter.changes(in: .workingSet)
-
-    #expect(changes.added == [added])
-    #expect(changes.updated == [updated])
-    #expect(changes.deleted == ["removed"])
-    #expect(await backend.calls == [
-        "workingSet",
-        "workingSet",
-    ])
-}
-
-@Test
-func adapterUsesDedicatedWorkingSetChangeProviderWhenAvailable() async throws {
-    let existing = ProviderItem(
-        id: "existing",
-        parentID: nil,
-        filename: "Existing.txt",
-        kind: .file,
-        size: 1,
-        contentVersion: Data("v1".utf8),
-        metadataVersion: Data("m1".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    let added = ProviderItem(
-        id: "added",
-        parentID: nil,
-        filename: "Added.txt",
-        kind: .file,
-        size: 2,
-        contentVersion: Data("v1".utf8),
-        metadataVersion: Data("m1".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    let backend = CustomWorkingSetChangeBackend(items: [existing])
-    let adapter = FileProviderAdapter(backend: backend)
-
-    _ = try await adapter.enumerate(container: .workingSet)
-    await backend.setItems([existing, added])
-    await backend.setCustomChanges(RemoteChangeSet(added: [added]))
-    let changes = try await adapter.changes(in: .workingSet)
-
-    #expect(changes.added == [added])
-    #expect(changes.updated.isEmpty)
-    #expect(changes.deleted.isEmpty)
-    #expect(await backend.calls == [
-        "workingSet",
-        "workingSetChanges:existing",
-        "workingSet",
-    ])
+    #expect(await backend.calls.filter { $0 == "enumerate:nil:/" }.count == 3)
 }
 
 @Test
