@@ -186,7 +186,8 @@ def publish(repo, branch, version, build, folder, stable):
         if digest(downloads / name) != expected:
             raise ValueError(f"GitHub asset checksum mismatch: {name}.")
     if releases["draft"]:
-        run("gh", "release", "edit", tag, "--repo", repo, "--draft=false", f"--prerelease={str(not stable).lower()}")
+        run("gh", "release", "edit", tag, "--repo", repo, "--notes-file", str(folder / "notes.md"),
+            "--draft=false", f"--prerelease={str(not stable).lower()}")
     # Check anonymous public downloads before pointing users' updaters at them.
     prefix = f"https://github.com/{repo}/releases/download/{tag}/"
     for name, expected in assets.items():

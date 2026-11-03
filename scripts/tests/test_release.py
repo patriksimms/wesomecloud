@@ -134,7 +134,8 @@ class Publication(unittest.TestCase):
         if operation == "create":
             if self.hosted is not None:
                 raise subprocess.CalledProcessError(422, args)
-            self.hosted = {"tag_name": "v0.1.4", "draft": True, "assets": []}
+            self.hosted = {"tag_name": "v0.1.4", "draft": True, "assets": [],
+                           "body": Path(args[args.index("--notes-file") + 1]).read_text()}
         elif operation == "upload":
             for filename in args[6:]:
                 name = Path(filename).name
@@ -149,6 +150,8 @@ class Publication(unittest.TestCase):
             for name, content in self.remote_assets.items():
                 (destination / name).write_bytes(b"corrupt" if self.corrupt_download else content)
         elif operation == "edit":
+            if "--notes-file" in args:
+                self.hosted["body"] = Path(args[args.index("--notes-file") + 1]).read_text()
             self.hosted["draft"] = False
             if self.downgrade_race:
                 self.published_feed = feed("0.1.5", 7)
@@ -216,7 +219,9 @@ class Publication(unittest.TestCase):
             self.publish()
         self.assertTrue(self.hosted["draft"])
         self.assertEqual(self.published_feed, feed())
+        self.hosted["body"] = "Draft edited after the failed upload"
         self.publish()
+        self.assertEqual(self.hosted["body"], "Test notes")
         self.assertEqual(self.published_feed, feed("0.1.4", 6))
         self.assertIn(b"Download WesomeCloud 0.1.4", self.published_page)
         self.assertEqual(release.git("--git-dir=../remote.git", "rev-parse", "v0.1.4^{commit}"), self.revision)
