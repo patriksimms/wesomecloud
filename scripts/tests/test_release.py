@@ -274,6 +274,13 @@ class Publication(unittest.TestCase):
         import shutil
         shutil.rmtree(self.folder)
         self.expected_asset_names = {"WesomeCloud-0.1.4.zip", "WesomeCloud-0.1.4.dmg", "WesomeCloud-0.1.4-source.tar.gz", "LICENSE", "NOTICE", "Sparkle-LICENSE.txt", "SHA256SUMS.txt"}
+        original_copy = release.shutil.copyfile
+        def copy_with_concurrent_license_edit(source, destination):
+            result = original_copy(source, destination)
+            if Path(source) == self.folder / "updates/WesomeCloud-0.1.4.zip":
+                for license_path in ("LICENSE", "NOTICE", "docs/Sparkle-LICENSE.txt"):
+                    Path(license_path).write_text("concurrent license edit")
+            return result
         def builder(*args, **kwargs):
             if args[:2] == ("git", "archive"):
                 # Another Git operation can move main after the post-build validation.
@@ -314,12 +321,15 @@ class Publication(unittest.TestCase):
                 release.main()
             release.git("push", "-q", "origin", "main")
             merged_revision = release.git("rev-parse", "HEAD")
-            with patch("sys.argv", ["release", "0.1.4"]):
+            with patch("sys.argv", ["release", "0.1.4"]), \
+                 patch.object(release.shutil, "copyfile", side_effect=copy_with_concurrent_license_edit):
                 release.main()
             self.assertIsNone(self.hosted)
             self.assertEqual(self.published_feed, feed())
             self.assertEqual(release.git("tag", "--list", "v0.1.4"), "")
             self.assertEqual(json.loads((self.folder / "manifest.json").read_text())["revision"], merged_revision)
+            for name in ("LICENSE", "NOTICE", "Sparkle-LICENSE.txt"):
+                self.assertEqual((self.folder / name).read_text(), "license notice")
             with tarfile.open(self.folder / "WesomeCloud-0.1.4-source.tar.gz") as archive:
                 self.assertEqual(archive.pax_headers["comment"], merged_revision)
             release.git("reset", "--hard", merged_revision)

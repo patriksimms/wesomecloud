@@ -332,7 +332,8 @@ def main():
             raise
         shutil.copyfile(folder / "updates" / f"WesomeCloud-{version}.zip", folder / f"WesomeCloud-{version}.zip")
         for source in ("LICENSE", "NOTICE", "docs/Sparkle-LICENSE.txt"):
-            shutil.copyfile(source, folder / Path(source).name)
+            (folder / Path(source).name).write_bytes(
+                subprocess.check_output(["git", "show", f"{source_revision}:{source}"]))
         source_name = f"WesomeCloud-{version}-source.tar.gz"
         run("git", "archive", "--format=tar.gz", f"--prefix=WesomeCloud-{version}/",
             f"--output={folder / source_name}", source_revision)
