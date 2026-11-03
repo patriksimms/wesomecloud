@@ -275,6 +275,9 @@ class Publication(unittest.TestCase):
         shutil.rmtree(self.folder)
         self.expected_asset_names = {"WesomeCloud-0.1.4.zip", "WesomeCloud-0.1.4.dmg", "WesomeCloud-0.1.4-source.tar.gz", "LICENSE", "NOTICE", "Sparkle-LICENSE.txt", "SHA256SUMS.txt"}
         def builder(*args, **kwargs):
+            if args[:2] == ("git", "archive"):
+                # Another Git operation can move main after the post-build validation.
+                release.git("commit", "--allow-empty", "-qm", "concurrent commit")
             if args[0] == "scripts/validate-release-signing.sh":
                 if "--archive" in args:
                     env = kwargs["env"]
@@ -317,6 +320,9 @@ class Publication(unittest.TestCase):
             self.assertEqual(self.published_feed, feed())
             self.assertEqual(release.git("tag", "--list", "v0.1.4"), "")
             self.assertEqual(json.loads((self.folder / "manifest.json").read_text())["revision"], merged_revision)
+            with tarfile.open(self.folder / "WesomeCloud-0.1.4-source.tar.gz") as archive:
+                self.assertEqual(archive.pax_headers["comment"], merged_revision)
+            release.git("reset", "--hard", merged_revision)
             with patch("sys.argv", ["release", "0.1.4", "--publish"]):
                 release.main()
         self.assertEqual(release.git("status", "--porcelain"), "")

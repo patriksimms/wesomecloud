@@ -335,14 +335,14 @@ def main():
             shutil.copyfile(source, folder / Path(source).name)
         source_name = f"WesomeCloud-{version}-source.tar.gz"
         run("git", "archive", "--format=tar.gz", f"--prefix=WesomeCloud-{version}/",
-            f"--output={folder / source_name}", "HEAD")
+            f"--output={folder / source_name}", source_revision)
         names = [f"WesomeCloud-{version}.dmg", f"WesomeCloud-{version}.zip", source_name, "LICENSE", "NOTICE", "Sparkle-LICENSE.txt"]
         assets = {name: digest(folder / name) for name in names}
         (folder / "SHA256SUMS.txt").write_text("".join(f"{checksum}  {name}\n" for name, checksum in assets.items()))
         assets["SHA256SUMS.txt"] = digest(folder / "SHA256SUMS.txt")
         (folder / "notes.md").write_text(notes)
         (folder / "manifest.json").write_text(json.dumps({"repo": repo, "branch": branch, "version": version, "build": build,
-            "revision": git("rev-parse", "HEAD"), "stable": args.stable, "assets": assets,
+            "revision": source_revision, "stable": args.stable, "assets": assets,
             "page_url": page_url, "feed_url": feed_url,
             "feed_sha256": digest(folder / "updates/appcast.xml"),
             "notes_sha256": digest(folder / "notes.md")}, indent=2) + "\n")
