@@ -27,12 +27,16 @@ public struct ProviderSpace: Sendable {
     public var id: String
     public var name: String
     public var rootPath: String
+    public var metadataID: UUID?
+    public var presentationPolicy: FileProviderPresentationPolicy
     public var backend: @Sendable () async throws -> any FileProviderBackend
 
-    public init(id: String, name: String, rootPath: String = "/", backend: @escaping @Sendable () async throws -> any FileProviderBackend) {
+    public init(id: String, name: String, rootPath: String = "/", metadataID: UUID? = nil, presentationPolicy: FileProviderPresentationPolicy = FileProviderPresentationPolicy(), backend: @escaping @Sendable () async throws -> any FileProviderBackend) {
         self.id = id
         self.name = name
         self.rootPath = rootPath
+        self.metadataID = metadataID
+        self.presentationPolicy = presentationPolicy
         self.backend = backend
     }
 
@@ -73,14 +77,16 @@ public struct ProviderSpace: Sendable {
 /// Loads selections for each request so adding, removing or renaming a space does not
 /// require restarting the File Provider extension. Each space retains its own sync store.
 public actor SpaceFileProviderBackend: FileProviderBackend, FileProviderWorkingSetProviding, FileProviderPartialContentProviding, FileProviderTransferProgressProviding {
+    let journalStore: SQLiteMetadataStore?
     private let spacesProvider: @Sendable () async throws -> [ProviderSpace]
     private var rootSnapshot: [String: ProviderItem] = [:]
 
-    public init(spaces: @escaping @Sendable () async throws -> [ProviderSpace]) {
+    public init(journalStore: SQLiteMetadataStore? = nil, spaces: @escaping @Sendable () async throws -> [ProviderSpace]) {
+        self.journalStore = journalStore
         self.spacesProvider = spaces
     }
 
-    private func spaces() async throws -> [ProviderSpace] {
+    func spaces() async throws -> [ProviderSpace] {
         var spaces = try await spacesProvider().sorted { $0.id < $1.id }
         // Finder names must be unique, including on case-insensitive volumes.
         var used = Set<String>()

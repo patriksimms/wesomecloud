@@ -2,6 +2,8 @@ import Foundation
 import SyncStore
 import WesomeCloudShared
 
+public enum ProviderEnumerationError: Error { case expired }
+
 public struct ProviderPage: Equatable, Sendable {
     public var items: [ProviderItem]
     public var nextPageToken: String?
@@ -38,10 +40,6 @@ public protocol FileProviderTransferProgressProviding: Sendable {
     func transferProgress(direction: TransferDirection) async throws -> TransferProgressSummary
 }
 
-public protocol FileProviderWorkingSetChangeProviding: FileProviderWorkingSetProviding {
-    func workingSetChanges(previousItems: [ProviderItem]) async throws -> RemoteChangeSet
-}
-
 extension FileProviderCoordinator: FileProviderBackend {}
 extension FileProviderCoordinator: FileProviderWorkingSetProviding {}
 extension FileProviderCoordinator: FileProviderPartialContentProviding {}
@@ -52,9 +50,8 @@ public actor FileProviderAdapter {
     private let pathResolver: ProviderPathResolving
     private let defaultPageSize: Int
     private let maxPageSnapshots: Int
-    private var pageSnapshots: [String: [ProviderItem]] = [:]
+    private var pageSnapshots: [String: (container: String, items: [ProviderItem])] = [:]
     private var pageSnapshotOrder: [String] = []
-    private var workingSetSnapshot: [String: ProviderItem] = [:]
 
     public init(backend: FileProviderBackend, pathResolver: ProviderPathResolving = ProviderPathResolver(), defaultPageSize: Int = 200) {
         self.init(
@@ -78,9 +75,12 @@ public actor FileProviderAdapter {
     }
 
     public func enumerate(container: ProviderContainerReference, pageToken: String? = nil, pageSize: Int? = nil) async throws -> ProviderPage {
+        let containerKey = journalContainerKey(container)
         let requestedPageSize = pageSize ?? defaultPageSize
-        if let pageToken, let token = PageToken(rawValue: pageToken), let items = pageSnapshots[token.snapshotID] {
-            return page(items: items, snapshotID: token.snapshotID, offset: token.offset, pageSize: requestedPageSize)
+        if let pageToken {
+            guard let token = PageToken(rawValue: pageToken), token.offset >= 0,
+                  let snapshot = pageSnapshots[token.snapshotID], snapshot.container == containerKey else { throw ProviderEnumerationError.expired }
+            return page(items: snapshot.items, snapshotID: token.snapshotID, offset: token.offset, pageSize: requestedPageSize, containerKey: containerKey)
         }
         if container == .workingSet {
             let items: [ProviderItem]
@@ -89,14 +89,13 @@ public actor FileProviderAdapter {
             } else {
                 items = try await backend.enumerate(parentID: nil, remotePath: "/")
             }
-            rememberWorkingSetSnapshot(items)
             let snapshotID = UUID().uuidString
-            return page(items: items, snapshotID: snapshotID, offset: Int(pageToken ?? "") ?? 0, pageSize: requestedPageSize)
+            return page(items: items, snapshotID: snapshotID, offset: 0, pageSize: requestedPageSize, containerKey: containerKey)
         }
         let resolved = pathResolver.resolve(container)
         let items = try await backend.enumerate(parentID: resolved.parentID, remotePath: resolved.remotePath)
         let snapshotID = UUID().uuidString
-        return page(items: items, snapshotID: snapshotID, offset: Int(pageToken ?? "") ?? 0, pageSize: requestedPageSize)
+        return page(items: items, snapshotID: snapshotID, offset: 0, pageSize: requestedPageSize, containerKey: containerKey)
     }
 
     public func itemForIdentifier(_ identifier: String, parentPath: String) async throws -> ProviderItem? {
@@ -143,9 +142,6 @@ public actor FileProviderAdapter {
     }
 
     public func changes(in container: ProviderContainerReference) async throws -> RemoteChangeSet {
-        if container == .workingSet {
-            return try await workingSetChanges()
-        }
         let resolved = pathResolver.resolve(container)
         return try await backend.pollRemoteChanges(parentID: resolved.parentID, remotePath: resolved.remotePath)
     }
@@ -163,9 +159,12 @@ public actor FileProviderAdapter {
         guard !normalizedQuery.isEmpty else {
             return ProviderPage(items: [])
         }
+        let containerKey = "search:" + normalizedQuery
         let requestedPageSize = pageSize ?? defaultPageSize
-        if let pageToken, let token = PageToken(rawValue: pageToken), let items = pageSnapshots[token.snapshotID] {
-            return page(items: items, snapshotID: token.snapshotID, offset: token.offset, pageSize: requestedPageSize)
+        if let pageToken {
+            guard let token = PageToken(rawValue: pageToken), token.offset >= 0,
+                  let snapshot = pageSnapshots[token.snapshotID], snapshot.container == containerKey else { throw ProviderEnumerationError.expired }
+            return page(items: snapshot.items, snapshotID: token.snapshotID, offset: token.offset, pageSize: requestedPageSize, containerKey: containerKey)
         }
         let items: [ProviderItem]
         if let provider = backend as? FileProviderWorkingSetProviding {
@@ -183,7 +182,7 @@ public actor FileProviderAdapter {
                 lhs.filename.localizedStandardCompare(rhs.filename) == .orderedAscending
             }
         let snapshotID = UUID().uuidString
-        return page(items: matches, snapshotID: snapshotID, offset: Int(pageToken ?? "") ?? 0, pageSize: requestedPageSize)
+        return page(items: matches, snapshotID: snapshotID, offset: 0, pageSize: requestedPageSize, containerKey: containerKey)
     }
 
     public func transferProgress(direction: TransferDirection) async throws -> TransferProgressSummary {
@@ -193,8 +192,8 @@ public actor FileProviderAdapter {
         return try await provider.transferProgress(direction: direction)
     }
 
-    private func page(items: [ProviderItem], snapshotID: String, offset: Int, pageSize: Int) -> ProviderPage {
-        let boundedPageSize = Swift.max(1, pageSize)
+    private func page(items: [ProviderItem], snapshotID: String, offset: Int, pageSize: Int, containerKey: String) -> ProviderPage {
+        let boundedPageSize = Swift.min(1000, Swift.max(1, pageSize))
         let offset = Swift.max(0, offset)
         guard offset < items.count else {
             pageSnapshots.removeValue(forKey: snapshotID)
@@ -203,17 +202,16 @@ public actor FileProviderAdapter {
         let end = Swift.min(offset + boundedPageSize, items.count)
         let nextPageToken: String?
         if end < items.count {
-            rememberPageSnapshot(items, snapshotID: snapshotID)
+            rememberPageSnapshot(items, snapshotID: snapshotID, containerKey: containerKey)
             nextPageToken = PageToken(snapshotID: snapshotID, offset: end).rawValue
         } else {
-            forgetPageSnapshot(snapshotID)
             nextPageToken = nil
         }
         return ProviderPage(items: Array(items[offset..<end]), nextPageToken: nextPageToken)
     }
 
-    private func rememberPageSnapshot(_ items: [ProviderItem], snapshotID: String) {
-        pageSnapshots[snapshotID] = items
+    private func rememberPageSnapshot(_ items: [ProviderItem], snapshotID: String, containerKey: String) {
+        pageSnapshots[snapshotID] = (containerKey, items)
         pageSnapshotOrder.removeAll { $0 == snapshotID }
         pageSnapshotOrder.append(snapshotID)
         while pageSnapshotOrder.count > maxPageSnapshots {
@@ -222,49 +220,6 @@ public actor FileProviderAdapter {
         }
     }
 
-    private func forgetPageSnapshot(_ snapshotID: String) {
-        pageSnapshots.removeValue(forKey: snapshotID)
-        pageSnapshotOrder.removeAll { $0 == snapshotID }
-    }
-
-    private func workingSetChanges() async throws -> RemoteChangeSet {
-        let previousItems = workingSetSnapshot.values.sorted { $0.id < $1.id }
-        let changes: RemoteChangeSet
-        if let provider = backend as? FileProviderWorkingSetChangeProviding {
-            changes = try await provider.workingSetChanges(previousItems: previousItems)
-            let current = try await provider.workingSetItems()
-            rememberWorkingSetSnapshot(current)
-            return changes
-        }
-
-        let current: [ProviderItem]
-        if let provider = backend as? FileProviderWorkingSetProviding {
-            current = try await provider.workingSetItems()
-        } else {
-            current = try await backend.enumerate(parentID: nil, remotePath: "/")
-        }
-        changes = diffWorkingSet(previous: workingSetSnapshot, current: current)
-        rememberWorkingSetSnapshot(current)
-        return changes
-    }
-
-    private func rememberWorkingSetSnapshot(_ items: [ProviderItem]) {
-        workingSetSnapshot = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
-    }
-
-    private func diffWorkingSet(previous: [String: ProviderItem], current: [ProviderItem]) -> RemoteChangeSet {
-        let currentByID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
-        let added = current.filter { previous[$0.id] == nil }
-        let updated = current.filter { item in
-            guard let previousItem = previous[item.id] else { return false }
-            return previousItem != item
-        }
-        let deleted = previous.keys
-            .filter { currentByID[$0] == nil }
-            .sorted()
-            .map { DeletedProviderItem(id: $0) }
-        return RemoteChangeSet(added: added, updated: updated, deletedItems: deleted)
-    }
 }
 
 private struct PageToken: Equatable {
@@ -330,6 +285,53 @@ public struct ProviderPathResolver: ProviderPathResolving {
             ResolvedProviderContainer(parentID: id, remotePath: path)
         case .path(let path):
             ResolvedProviderContainer(parentID: path == "/" ? nil : path, remotePath: path)
+        }
+    }
+}
+
+extension FileProviderAdapter {
+    public func currentSyncAnchor(in container: ProviderContainerReference) async throws -> Data {
+        guard let provider = backend as? any FileProviderJournalProviding else { throw ProviderJournalError.expired }
+        let context = try await provider.journalContext()
+        return try ProviderSyncAnchor(epoch: context.state.epoch, presentation: context.presentation, container: journalContainerKey(container), position: context.state.position).data
+    }
+
+    public func changePage(in container: ProviderContainerReference, from data: Data, pageSize: Int = 200) async throws -> ProviderChangePage {
+        guard let provider = backend as? any FileProviderJournalProviding else { throw ProviderJournalError.expired }
+        var anchor = try ProviderSyncAnchor.decode(data)
+        let context = try await provider.journalContext()
+        guard anchor.epoch == context.state.epoch, anchor.presentation == context.presentation,
+              anchor.container == journalContainerKey(container), anchor.position >= context.state.floor,
+              anchor.position <= context.state.position else { throw ProviderJournalError.expired }
+        let upper = anchor.upperBound ?? context.state.position
+        guard upper >= anchor.position, upper <= context.state.position else { throw ProviderJournalError.expired }
+        let batch = try await provider.journalChanges(after: anchor.position, through: upper, limit: min(1000, max(1, pageSize)))
+        var updated: [String: ProviderItem] = [:]
+        var deleted = Set<String>()
+        let parent = pathResolver.resolve(container).parentID
+        for entry in batch.entries {
+            let belongs = container == .workingSet || entry.item.parentID == parent || entry.item.id == parent
+            let belonged = entry.hadPrevious && (container == .workingSet || entry.previousParentID == parent || entry.item.id == parent)
+            if belongs && !entry.deleted {
+                updated[entry.item.id] = entry.item
+                deleted.remove(entry.item.id)
+            } else if belonged || belongs {
+                updated.removeValue(forKey: entry.item.id)
+                deleted.insert(entry.item.id)
+            }
+        }
+        anchor.position = batch.position
+        let more = batch.position < upper
+        anchor.upperBound = more ? upper : nil
+        return ProviderChangePage(updated: updated.values.sorted { $0.id < $1.id }, deleted: deleted.sorted(), anchor: try anchor.data, moreComing: more, position: batch.position, upperBound: upper)
+    }
+
+    private func journalContainerKey(_ container: ProviderContainerReference) -> String {
+        switch container {
+        case .workingSet: "workingSet"
+        case .root: "root"
+        case .item(let id, _): "item:" + id
+        case .path(let path): "path:" + path
         }
     }
 }

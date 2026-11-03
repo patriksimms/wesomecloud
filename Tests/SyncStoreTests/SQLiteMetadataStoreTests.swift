@@ -648,3 +648,74 @@ func sqliteStoreKeepsTransactionsIntactUnderConcurrentWrites() async throws {
     #expect(remaining.filter { $0.hasPrefix("file-") }.count == 100)
     #expect(remaining.filter { $0.hasPrefix("new-") }.count == 100)
 }
+
+@Test
+func sqliteJournalCommitsWithMetadataAndIgnoresUnchangedMetadataAndByteProgress() async throws {
+    let url = temporaryDatabaseURL()
+    let store = try SQLiteMetadataStore(databaseURL: url)
+    let account = UUID()
+    let item = RemoteItem(id: "existing", parentID: nil, name: "Existing.txt", path: "/Existing.txt", kind: .file)
+    try await store.upsert(accountID: account, items: [item])
+    let initial = try store.providerJournalState()
+    try await store.upsert(accountID: account, items: [item])
+    #expect(try store.providerJournalState() == initial)
+    var transfer = TransferRecord(itemID: item.id, direction: .download, phase: .running, remotePath: item.path)
+    try await store.upsertTransfer(transfer, accountID: account)
+    let running = try store.providerJournalState()
+    transfer.bytesTransferred = 100
+    transfer.updatedAt = Date()
+    try await store.upsertTransfer(transfer, accountID: account)
+    #expect(try store.providerJournalState() == running)
+    try executeSQL("CREATE TRIGGER fail_second_item BEFORE INSERT ON items WHEN NEW.item_id = 'fail' BEGIN SELECT RAISE(ABORT, 'test write failure'); END", databaseURL: url)
+    let first = RemoteItem(id: "first", parentID: nil, name: "First.txt", path: "/First.txt", kind: .file)
+    let fail = RemoteItem(id: "fail", parentID: nil, name: "Fail.txt", path: "/Fail.txt", kind: .file)
+    await #expect(throws: (any Error).self) { try await store.upsert(accountID: account, items: [first, fail]) }
+    let reopened = try SQLiteMetadataStore(databaseURL: url)
+    #expect(try await reopened.item(accountID: account, id: "first") == nil)
+    #expect(try reopened.providerJournalState() == running)
+    let changes = try reopened.providerChanges(after: initial.position, through: running.position, limit: 20)
+    #expect(changes.count == 1)
+    #expect(changes.first?.transfer?.phase == .running)
+}
+
+@Test
+func sqliteJournalBoundsRetentionAndRejectsExpiredPositionsAcrossReopen() async throws {
+    let url = temporaryDatabaseURL()
+    let store = try SQLiteMetadataStore(databaseURL: url)
+    let account = UUID()
+    let initial = try store.providerJournalState()
+    let items = (0..<100_001).map { index in
+        RemoteItem(id: "file", parentID: nil, name: "File.txt", path: "/File.txt", kind: .file, etag: "\(index)")
+    }
+    try await store.upsert(accountID: account, items: items)
+    let reopened = try SQLiteMetadataStore(databaseURL: url)
+    let current = try reopened.providerJournalState()
+    #expect(current.epoch == initial.epoch)
+    #expect(current.position == 100_001)
+    #expect(current.floor == 1)
+    #expect(throws: ProviderJournalError.self) { try reopened.providerChanges(after: initial.position, through: current.position, limit: 200) }
+    let retained = try reopened.providerChanges(after: current.floor, through: current.position, limit: 1000)
+    #expect(retained.first?.sequence == 2)
+    #expect(retained.count == 1000)
+    #expect(try await reopened.item(accountID: account, id: "file")?.remote.etag == "100000")
+}
+
+@Test
+func sqliteJournalReadersRemainAvailableWhileAnotherConnectionWrites() async throws {
+    let url = temporaryDatabaseURL()
+    let store = try SQLiteMetadataStore(databaseURL: url)
+    let configuration = Data("configuration".utf8)
+    try store.reconcileProviderPresentation(scope: "finder", configuration: configuration) { _ in [] }
+    let state = try store.providerJournalState()
+    var writer: OpaquePointer?
+    #expect(sqlite3_open(url.path, &writer) == SQLITE_OK)
+    let connection = try #require(writer)
+    defer { sqlite3_exec(connection, "ROLLBACK", nil, nil, nil); sqlite3_close(connection) }
+    #expect(sqlite3_exec(connection, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK)
+    // Neither operation changes metadata, so WAL readers must not wait for the writer.
+    #expect(try store.providerChanges(after: state.position, through: state.position, limit: 200).isEmpty)
+    try store.reconcileProviderPresentation(scope: "finder", configuration: configuration) { _ in
+        Issue.record("Unchanged presentation must not be regenerated")
+        return []
+    }
+}

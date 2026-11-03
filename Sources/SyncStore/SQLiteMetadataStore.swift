@@ -6,7 +6,7 @@ import WesomeCloudShared
 /// One connection per instance; `lock` serializes every statement and spans whole transactions,
 /// because concurrent async callers would otherwise interleave BEGIN/COMMIT on the same handle.
 public final class SQLiteMetadataStore: MetadataStore, @unchecked Sendable {
-    public static let currentSchemaVersion = 5
+    public static let currentSchemaVersion = 6
 
     private let database: OpaquePointer
     private let lock = NSRecursiveLock()
@@ -386,6 +386,10 @@ public final class SQLiteMetadataStore: MetadataStore, @unchecked Sendable {
     }
 
     public func transfers(accountID: UUID) async throws -> [TransferRecord] {
+        try storedTransfers(accountID: accountID)
+    }
+
+    public func storedTransfers(accountID: UUID) throws -> [TransferRecord] {
         try withStatement("SELECT payload FROM transfers WHERE account_id = ? ORDER BY updated_at DESC") { statement in
             bind(accountID.uuidString, to: statement, at: 1)
             var result: [TransferRecord] = []
@@ -515,6 +519,7 @@ public final class SQLiteMetadataStore: MetadataStore, @unchecked Sendable {
             try createCurrentSchema()
             try addMissingItemsCreatedAtColumn()
             try addMissingItemMetadataColumns()
+            try createChangeJournal()
             let addedPendingRetryColumns = try addMissingPendingOperationRetryColumns()
             if addedPendingRetryColumns {
                 try migratePendingOperationRetryColumnsFromPayload()
@@ -630,6 +635,106 @@ public final class SQLiteMetadataStore: MetadataStore, @unchecked Sendable {
         """)
     }
 
+    // Triggers run in the metadata writer's transaction, including writes from the app.
+    // Keep 100,000 events globally. The retained floor survives pruning an account.
+    private func createChangeJournal() throws {
+        try execute("CREATE TABLE IF NOT EXISTS provider_journal_state (id INTEGER PRIMARY KEY CHECK(id = 1), epoch TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0, floor INTEGER NOT NULL DEFAULT 0)")
+        try execute("INSERT OR IGNORE INTO provider_journal_state(id, epoch) VALUES (1, '\(UUID().uuidString)')")
+        try execute("CREATE TABLE IF NOT EXISTS provider_changes AS SELECT CAST(0 AS INTEGER) AS sequence, CAST(NULL AS TEXT) AS previous_parent_id, CAST(0 AS INTEGER) AS had_previous, CAST(0 AS INTEGER) AS deleted, CAST(NULL AS BLOB) AS transfer_payload, CAST(NULL AS TEXT) AS presentation_scope, CAST(NULL AS BLOB) AS presentation_payload, items.* FROM items WHERE 0")
+        try execute("CREATE TABLE IF NOT EXISTS provider_presentations (scope TEXT PRIMARY KEY, configuration BLOB NOT NULL)")
+        try execute("CREATE UNIQUE INDEX IF NOT EXISTS provider_changes_sequence ON provider_changes(sequence)")
+        let columns = ["account_id", "item_id", "parent_id", "name", "path", "kind", "size", "etag", "file_id", "checksum", "permissions", "created_at", "modified_at", "content_type", "quota_used_bytes", "quota_available_bytes", "private_link", "availability_intent", "materialized_url", "last_seen"]
+        let copiedColumns = columns.joined(separator: ", ")
+        func record(row: String, previousParent: String, deleted: Bool, hadPrevious: Bool = true, source: String = "") -> String {
+            """
+            UPDATE provider_journal_state SET position = position + 1 WHERE id = 1;
+            INSERT INTO provider_changes (sequence, previous_parent_id, had_previous, deleted, transfer_payload, \(copiedColumns))
+            SELECT (SELECT position FROM provider_journal_state WHERE id = 1), \(previousParent), \(hadPrevious ? 1 : 0), \(deleted ? 1 : 0),
+                (SELECT payload FROM transfers WHERE account_id = \(row).account_id AND item_id = \(row).item_id ORDER BY updated_at DESC LIMIT 1),
+                \(columns.map { "\(row).\($0)" }.joined(separator: ", "))\(source);
+            UPDATE provider_journal_state SET floor = MAX(floor, position - 100000) WHERE id = 1;
+            DELETE FROM provider_changes WHERE sequence <= (SELECT floor FROM provider_journal_state WHERE id = 1);
+            """
+        }
+        try execute("CREATE TRIGGER IF NOT EXISTS provider_item_insert AFTER INSERT ON items BEGIN \(record(row: "NEW", previousParent: "NULL", deleted: false, hadPrevious: false)) END")
+        let changed = columns.filter { $0 != "last_seen" && $0 != "account_id" }.map { "OLD.\($0) IS NOT NEW.\($0)" }.joined(separator: " OR ")
+        try execute("CREATE TRIGGER IF NOT EXISTS provider_item_update AFTER UPDATE ON items WHEN \(changed) BEGIN \(record(row: "NEW", previousParent: "OLD.parent_id", deleted: false)) END")
+        try execute("CREATE TRIGGER IF NOT EXISTS provider_item_delete AFTER DELETE ON items BEGIN \(record(row: "OLD", previousParent: "OLD.parent_id", deleted: true)) END")
+        // A transfer's byte counter is not exposed by ProviderItem. Only journal state/error changes.
+        for operation in ["INSERT", "UPDATE", "DELETE"] {
+            let row = operation == "DELETE" ? "OLD" : "NEW"
+            let condition = operation == "UPDATE" ? "WHEN OLD.phase IS NOT NEW.phase OR OLD.direction IS NOT NEW.direction OR json_extract(OLD.payload, '$.lastErrorDescription') IS NOT json_extract(NEW.payload, '$.lastErrorDescription')" : ""
+            let body = record(row: "i", previousParent: "i.parent_id", deleted: false,
+                              source: " FROM items i WHERE i.account_id = \(row).account_id AND i.item_id = \(row).item_id")
+            try execute("CREATE TRIGGER IF NOT EXISTS provider_transfer_\(operation.lowercased()) AFTER \(operation) ON transfers \(condition) BEGIN \(body) END")
+        }
+    }
+
+    /// Configuration changes are discovered by readers, then journaled exactly once
+    /// across processes. Building both presentations inside the transaction prevents
+    /// metadata writes from slipping between the comparison and its journal entries.
+    public func reconcileProviderPresentation(scope: String, configuration: Data, changes: (Data?) throws -> [ProviderPresentationChange]) throws {
+        func storedConfiguration() throws -> Data? {
+            try withStatement("SELECT configuration FROM provider_presentations WHERE scope = ?") { statement in
+                bind(scope, to: statement, at: 1)
+                return try step(statement) ? columnData(statement, "configuration") : nil
+            }
+        }
+        guard try storedConfiguration() != configuration else { return }
+        try transaction {
+            let previous = try storedConfiguration()
+            guard previous != configuration else { return }
+            for change in try changes(previous) {
+                try execute("UPDATE provider_journal_state SET position = position + 1 WHERE id = 1")
+                try withStatement("INSERT INTO provider_changes(sequence, presentation_scope, presentation_payload, deleted, previous_parent_id, had_previous) SELECT position, ?, ?, ?, ?, ? FROM provider_journal_state WHERE id = 1") { statement in
+                    bind(scope, to: statement, at: 1)
+                    bind(change.payload, to: statement, at: 2)
+                    bind(change.deleted ? 1 : 0, to: statement, at: 3)
+                    bind(change.previousParentID, to: statement, at: 4)
+                    bind(change.hadPrevious ? 1 : 0, to: statement, at: 5)
+                    guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError() }
+                }
+            }
+            try withStatement("INSERT INTO provider_presentations(scope, configuration) VALUES (?, ?) ON CONFLICT(scope) DO UPDATE SET configuration=excluded.configuration") { statement in
+                bind(scope, to: statement, at: 1)
+                bind(configuration, to: statement, at: 2)
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError() }
+            }
+            try execute("UPDATE provider_journal_state SET floor = MAX(floor, position - 100000) WHERE id = 1")
+            try execute("DELETE FROM provider_changes WHERE sequence <= (SELECT floor FROM provider_journal_state WHERE id = 1)")
+        }
+    }
+
+    public func providerJournalState() throws -> ProviderJournalState {
+        try withStatement("SELECT epoch, position, floor FROM provider_journal_state WHERE id = 1") { statement in
+            guard try step(statement), let epoch = columnText(statement, "epoch") else { throw lastError() }
+            return ProviderJournalState(epoch: epoch, position: columnInt64(statement, "position") ?? 0, floor: columnInt64(statement, "floor") ?? 0)
+        }
+    }
+
+    public func providerChanges(after position: Int64, through upperBound: Int64, limit: Int) throws -> [StoredProviderChange] {
+        var result: [StoredProviderChange] = []
+        try transaction(readOnly: true) {
+            let state = try providerJournalState()
+            guard position >= state.floor, position <= upperBound, upperBound <= state.position else { throw ProviderJournalError.expired }
+            try withStatement("SELECT * FROM provider_changes WHERE sequence > ? AND sequence <= ? ORDER BY sequence LIMIT ?") { statement in
+                bind(position, to: statement, at: 1)
+                bind(upperBound, to: statement, at: 2)
+                bind(max(1, min(1000, limit)), to: statement, at: 3)
+                while try step(statement) {
+                    let account = columnText(statement, "account_id").flatMap(UUID.init(uuidString:))
+                    var transfer: TransferRecord?
+                    let index = columnIndex(statement, "transfer_payload")
+                    if let bytes = sqlite3_column_blob(statement, index) {
+                        transfer = try decoder.decode(TransferRecord.self, from: Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, index))))
+                    }
+                    result.append(StoredProviderChange(sequence: columnInt64(statement, "sequence") ?? 0, accountID: account, item: columnText(statement, "presentation_scope") == nil ? try readStoredItem(statement) : nil, previousParentID: columnText(statement, "previous_parent_id"), hadPrevious: columnInt64(statement, "had_previous") == 1, deleted: columnInt64(statement, "deleted") == 1, transfer: transfer, presentationScope: columnText(statement, "presentation_scope"), presentationPayload: columnData(statement, "presentation_payload")))
+                }
+            }
+        }
+        return result
+    }
+
     private func updateSingleItem(sql: String, values: [String?], itemID: String) throws {
         try withStatement(sql) { statement in
             for (index, value) in values.enumerated() {
@@ -651,10 +756,10 @@ public final class SQLiteMetadataStore: MetadataStore, @unchecked Sendable {
         }
     }
 
-    private func transaction(_ body: () throws -> Void) throws {
+    private func transaction(readOnly: Bool = false, _ body: () throws -> Void) throws {
         lock.lock()
         defer { lock.unlock() }
-        try execute("BEGIN IMMEDIATE")
+        try execute(readOnly ? "BEGIN" : "BEGIN IMMEDIATE")
         do {
             try body()
             try execute("COMMIT")
@@ -891,4 +996,10 @@ private func columnIndex(_ statement: OpaquePointer, _ name: String) -> Int32 {
         }
     }
     preconditionFailure("Missing SQLite column \(name)")
+}
+
+private func columnData(_ statement: OpaquePointer, _ name: String) -> Data? {
+    let index = columnIndex(statement, name)
+    guard let bytes = sqlite3_column_blob(statement, index) else { return nil }
+    return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, index)))
 }

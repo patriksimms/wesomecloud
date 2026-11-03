@@ -1,9 +1,9 @@
 import Foundation
 import OwnCloudKit
-import SyncStore
+@testable import SyncStore
 import Testing
 import WesomeCloudAppCore
-import WesomeFileProviderCore
+@testable import WesomeFileProviderCore
 import WesomeFileProviderExtension
 import WesomeCloudShared
 
@@ -80,7 +80,7 @@ private actor RuntimeRefreshExchanger: OAuthRefreshTokenExchanging {
     }
 }
 
-private actor ExtensionBackend: FileProviderBackend, FileProviderWorkingSetProviding, FileProviderPartialContentProviding, FileProviderTransferProgressProviding {
+private actor ExtensionBackend: FileProviderJournalProviding, FileProviderBackend, FileProviderWorkingSetProviding, FileProviderPartialContentProviding, FileProviderTransferProgressProviding {
     var item = ProviderItem(stored: StoredItem(remote: RemoteItem(id: "root-file", parentID: nil, name: "Root.txt", path: "/Root.txt", kind: .file)))
     var workingSet: [ProviderItem] = []
     var changeSet = RemoteChangeSet()
@@ -118,6 +118,13 @@ private actor ExtensionBackend: FileProviderBackend, FileProviderWorkingSetProvi
     func workingSetItems() async throws -> [ProviderItem] {
         workingSet
     }
+    func journalContext() async throws -> ProviderJournalContext {
+        ProviderJournalContext(state: ProviderJournalState(epoch: "stub", position: 0, floor: 0), presentation: "stub")
+    }
+    func journalChanges(after: Int64, through: Int64, limit: Int) async throws -> ProviderJournalBatch {
+        ProviderJournalBatch(entries: [], position: through)
+    }
+
     func item(itemID: String) async throws -> ProviderItem? {
         item.id == itemID ? item : nil
     }
@@ -1202,8 +1209,18 @@ func unifiedRuntimeKeepsSpaceListingsAndDownloadsSeparateAcrossRestartAndSelecti
     let factory = ProductionExtensionRuntimeFactory(paths: paths, transport: SpaceRuntimeTransport())
     let resolver = ProductionDomainRuntimeResolver(accounts: accounts, credentials: credentials, factory: factory)
     let runtime = try await resolver.makeRuntime(domainID: ProviderSpaceIdentifier.domainID)
+    // Local root enumeration and journal boundaries must work before credentials exist.
+    let rootObserver = EnumerationObserver()
+    let rootEnumerator = WesomeFileProviderEnumerator(adapter: runtime.adapter, container: .root)
+    rootEnumerator.enumerateItems(for: rootObserver, startingAt: NSFileProviderPage(Data()))
+    #expect(try await rootObserver.result().items.map(\.filename) == ["AM", "HR"])
     let folders = try await runtime.adapter.enumerate(container: .root).items
     #expect(folders.map(\.filename) == ["AM", "HR"])
+    let localJournalAnchor = try await runtime.adapter.currentSyncAnchor(in: .workingSet)
+    let metadata = try SQLiteMetadataStore(databaseURL: paths.database)
+    try await metadata.upsert(accountID: record.domains[0].metadataID, items: [RemoteItem(id: "queued", parentID: nil, name: "Queued.txt", path: "/Queued.txt", kind: .file)])
+    let localChanges = try await runtime.adapter.changePage(in: .workingSet, from: localJournalAnchor)
+    #expect(localChanges.updated.map(\.filename) == ["Queued.txt"])
     try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "secret", kind: .appPassword))
     let amFolder = folders[0]
     let hrFolder = folders[1]
@@ -1228,19 +1245,21 @@ func unifiedRuntimeKeepsSpaceListingsAndDownloadsSeparateAcrossRestartAndSelecti
     #expect(try await restored.adapter.itemForIdentifier(am.id, parentPath: "/AM")?.filename == "AM.txt")
     #expect(try await restored.adapter.itemForIdentifier(hr.id, parentPath: "/HR")?.filename == "HR.txt")
 
+    let workingAnchor = try await restored.adapter.currentSyncAnchor(in: .workingSet)
+    let rootAnchor = try await restored.adapter.currentSyncAnchor(in: .root)
     _ = try await restored.adapter.enumerate(container: .workingSet)
     record.domains.removeLast()
     record.domains[0].displayName = "Marketing"
     try await accounts.save(record)
-    let changes = try await restored.adapter.changes(in: .root)
+    let changes = try await restored.adapter.changePage(in: .root, from: rootAnchor)
     #expect(changes.updated.map(\.filename) == ["Marketing"])
     #expect(changes.deleted == [hrFolder.id])
-    let workingSetChanges = try await restored.adapter.changes(in: .workingSet)
+    let workingSetChanges = try await restored.adapter.changePage(in: .workingSet, from: workingAnchor)
     #expect(Set(workingSetChanges.deleted) == [hrFolder.id, hr.id])
     #expect(try await restored.adapter.itemForIdentifier(am.id, parentPath: "/")?.path == "/Marketing/AM.txt")
     record.domains = originalDomains
     try await accounts.save(record)
-    #expect(try await restored.adapter.changes(in: .root).added.map(\.id) == [hrFolder.id])
+    #expect(Set(try await restored.adapter.changePage(in: .root, from: changes.anchor).updated.map(\.id)) == [amFolder.id, hrFolder.id])
 }
 
 @Test
@@ -1657,100 +1676,6 @@ func fileProviderItemMapsReparentCapabilitySeparatelyFromRename() {
 
     #expect(item.capabilities.contains(.allowsReparenting))
     #expect(!item.capabilities.contains(.allowsRenaming))
-}
-
-@Test
-func fileProviderEnumeratorKeepsCurrentSyncAnchorStableUntilChangesAdvanceIt() async throws {
-    let backend = ExtensionBackend()
-    let updated = ProviderItem(
-        id: "updated-file",
-        parentID: nil,
-        filename: "Updated.txt",
-        kind: .file,
-        size: 12,
-        contentVersion: Data("content".utf8),
-        metadataVersion: Data("metadata".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    await backend.setChangeSet(RemoteChangeSet(added: [updated], updated: [], deleted: ["deleted-file"]))
-    let enumerator = WesomeFileProviderEnumerator(adapter: FileProviderAdapter(backend: backend), container: .root)
-
-    let firstAnchor = try await currentAnchor(from: enumerator)
-    let repeatedAnchor = try await currentAnchor(from: enumerator)
-    let observer = ChangeObserver()
-
-    enumerator.enumerateChanges(for: observer, from: firstAnchor)
-    let result = try await observer.result()
-    let advancedAnchor = try await currentAnchor(from: enumerator)
-
-    #expect(anchorData(firstAnchor) == anchorData(repeatedAnchor))
-    #expect(anchorData(result.anchor) == anchorData(advancedAnchor))
-    #expect(anchorData(result.anchor) != anchorData(firstAnchor))
-    #expect(result.updated.map(\.itemIdentifier.rawValue) == ["updated-file"])
-    #expect(result.deleted.map(\.rawValue) == ["deleted-file"])
-    #expect(result.moreComing == false)
-}
-
-@Test
-func fileProviderWorkingSetEnumeratorReportsChangesFromWorkingSetSnapshot() async throws {
-    let backend = ExtensionBackend()
-    let original = ProviderItem(
-        id: "nested-file",
-        parentID: "folder",
-        filename: "Nested.txt",
-        kind: .file,
-        size: 1,
-        path: "/Folder/Nested.txt",
-        contentVersion: Data("content-1".utf8),
-        metadataVersion: Data("metadata-1".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    let updated = ProviderItem(
-        id: "nested-file",
-        parentID: "folder",
-        filename: "Nested.txt",
-        kind: .file,
-        size: 2,
-        path: "/Folder/Nested.txt",
-        contentVersion: Data("content-2".utf8),
-        metadataVersion: Data("metadata-2".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    let added = ProviderItem(
-        id: "added-file",
-        parentID: "folder",
-        filename: "Added.txt",
-        kind: .file,
-        size: 3,
-        path: "/Folder/Added.txt",
-        contentVersion: Data("content".utf8),
-        metadataVersion: Data("metadata".utf8),
-        availabilityIntent: .unspecified,
-        capabilities: [.read]
-    )
-    await backend.setWorkingSet([original])
-    let runtime = FileProviderExtensionRuntime(adapter: FileProviderAdapter(backend: backend))
-    let enumerator = WesomeFileProviderEnumerator(
-        runtimeProvider: { runtime },
-        containerIdentifier: NSFileProviderItemIdentifier.workingSet.rawValue
-    )
-    let itemObserver = EnumerationObserver()
-
-    enumerator.enumerateItems(for: itemObserver, startingAt: NSFileProviderPage(Data()))
-    _ = try await itemObserver.result()
-    await backend.setWorkingSet([updated, added])
-
-    let changeObserver = ChangeObserver()
-    enumerator.enumerateChanges(for: changeObserver, from: try await currentAnchor(from: enumerator))
-    let result = try await changeObserver.result()
-
-    #expect(result.updated.map(\.itemIdentifier.rawValue) == ["added-file", "nested-file"])
-    #expect(result.deleted.isEmpty)
-    #expect(result.moreComing == false)
-    #expect(await backend.enumerateCalls.isEmpty)
 }
 
 @Test
@@ -2295,7 +2220,9 @@ private func expectFileProviderError(
     }
 }
 
-private final class EnumerationObserver: NSObject, NSFileProviderEnumerationObserver, @unchecked Sendable {
+final class EnumerationObserver: NSObject, NSFileProviderEnumerationObserver, @unchecked Sendable {
+    let suggestedPageSize: Int
+    init(limit: Int = 200) { suggestedPageSize = limit }
     struct Result {
         var items: [NSFileProviderItem]
         var nextPage: NSFileProviderPage?
@@ -2308,6 +2235,7 @@ private final class EnumerationObserver: NSObject, NSFileProviderEnumerationObse
     private var completedError: Error?
 
     func didEnumerate(_ updatedItems: [NSFileProviderItem]) {
+        #expect(updatedItems.count <= suggestedPageSize)
         lock.lock()
         items += updatedItems
         lock.unlock()
@@ -2417,7 +2345,7 @@ private final class SearchObserver: NSObject, NSFileProviderSearchEnumerationObs
     }
 }
 
-private func currentAnchor(from enumerator: WesomeFileProviderEnumerator) async throws -> NSFileProviderSyncAnchor {
+func currentAnchor(from enumerator: WesomeFileProviderEnumerator) async throws -> NSFileProviderSyncAnchor {
     try await withCheckedThrowingContinuation { continuation in
         enumerator.currentSyncAnchor { anchor in
             if let anchor {
@@ -2433,7 +2361,9 @@ private func anchorData(_ anchor: NSFileProviderSyncAnchor) -> Data {
     anchor.rawValue
 }
 
-private final class ChangeObserver: NSObject, NSFileProviderChangeObserver, @unchecked Sendable {
+final class ChangeObserver: NSObject, NSFileProviderChangeObserver, @unchecked Sendable {
+    let suggestedBatchSize: Int
+    init(limit: Int = 200) { suggestedBatchSize = limit }
     struct Result {
         var updated: [NSFileProviderItem]
         var deleted: [NSFileProviderItemIdentifier]
@@ -2446,6 +2376,7 @@ private final class ChangeObserver: NSObject, NSFileProviderChangeObserver, @unc
     private var deletedIdentifiers: [NSFileProviderItemIdentifier] = []
     private var continuation: CheckedContinuation<Result, Error>?
     private var completed: Result?
+    private var completedError: Error?
 
     func didUpdate(_ updatedItems: [NSFileProviderItem]) {
         lock.lock()
@@ -2461,6 +2392,7 @@ private final class ChangeObserver: NSObject, NSFileProviderChangeObserver, @unc
 
     func finishEnumeratingChanges(upTo syncAnchor: NSFileProviderSyncAnchor, moreComing: Bool) {
         lock.lock()
+        #expect(updatedItems.count + deletedIdentifiers.count <= suggestedBatchSize)
         let result = Result(updated: updatedItems, deleted: deletedIdentifiers, anchor: syncAnchor, moreComing: moreComing)
         if let continuation {
             self.continuation = nil
@@ -2479,6 +2411,7 @@ private final class ChangeObserver: NSObject, NSFileProviderChangeObserver, @unc
             lock.unlock()
             continuation.resume(throwing: error)
         } else {
+            completedError = error
             lock.unlock()
         }
     }
@@ -2489,6 +2422,9 @@ private final class ChangeObserver: NSObject, NSFileProviderChangeObserver, @unc
             if let completed {
                 lock.unlock()
                 continuation.resume(returning: completed)
+            } else if let completedError {
+                lock.unlock()
+                continuation.resume(throwing: completedError)
             } else {
                 self.continuation = continuation
                 lock.unlock()
