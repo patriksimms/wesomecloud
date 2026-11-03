@@ -143,7 +143,8 @@ func initialListingBoundaryRetainsWritesDuringPaginationAndExpiredPagesRequestRe
     enumerator.enumerateItems(for: secondObserver, startingAt: token)
     let second = try await secondObserver.result()
     #expect(second.items.map(\.itemIdentifier.rawValue) == ["b"])
-    let changes = try await changeResult(enumerator, from: currentAnchor(from: enumerator))
+    let listingAnchor = try await currentAnchor(from: enumerator)
+    let changes = try await changeResult(enumerator, from: listingAnchor)
     #expect(changes.updated.map(\.itemIdentifier.rawValue) == ["during-listing"])
     let restartObserver = EnumerationObserver(limit: 1)
     try fixture.enumerator().enumerateItems(for: restartObserver, startingAt: token)
@@ -153,6 +154,12 @@ func initialListingBoundaryRetainsWritesDuringPaginationAndExpiredPagesRequestRe
     await #expect { try await changeResult(enumerator, from: NSFileProviderSyncAnchor(Data("v1".utf8))) } throws: { error in
         (error as NSError).code == NSFileProviderError.syncAnchorExpired.rawValue
     }
+    let freshObserver = EnumerationObserver(limit: 1)
+    enumerator.enumerateItems(for: freshObserver, startingAt: NSFileProviderPage(Data()))
+    _ = try await freshObserver.result()
+    let freshAnchor = try await currentAnchor(from: enumerator)
+    #expect(freshAnchor.rawValue != listingAnchor.rawValue)
+    #expect(try await changeResult(enumerator, from: freshAnchor).updated.isEmpty)
 }
 
 private actor SelectedJournalSpaces {
@@ -167,7 +174,7 @@ func journalPersistsSpaceSelectionRenameAndVisibilityChanges() async throws {
     try await fixture.store.upsert(accountID: fixture.account.id, items: [fixture.item("visible"), fixture.item("hidden", name: ".hidden")])
     let selected = SelectedJournalSpaces()
     let coordinator = try fixture.coordinator()
-    await selected.set([ProviderSpace(id: "space", name: "Original", backend: { coordinator })])
+    await selected.set([ProviderSpace(id: "space", name: "Original", metadataID: fixture.account.id, backend: { coordinator })])
     func adapter() -> FileProviderAdapter {
         FileProviderAdapter(backend: SpaceFileProviderBackend(journalStore: fixture.store, spaces: { await selected.spaces }))
     }
@@ -178,7 +185,7 @@ func journalPersistsSpaceSelectionRenameAndVisibilityChanges() async throws {
     #expect(page.updated.map(\.filename) == ["later.txt"])
     anchor = page.anchor
     let showHidden = try fixture.coordinator(policy: FileProviderPresentationPolicy(showHiddenFiles: true))
-    await selected.set([ProviderSpace(id: "space", name: "Renamed", backend: { showHidden })])
+    await selected.set([ProviderSpace(id: "space", name: "Renamed", metadataID: fixture.account.id, presentationPolicy: FileProviderPresentationPolicy(showHiddenFiles: true), backend: { showHidden })])
     page = try await adapter().changePage(in: .workingSet, from: anchor)
     #expect(Set(page.updated.map(\.filename)) == ["Renamed", "visible.txt", "later.txt", ".hidden"])
     #expect(page.updated.first { $0.filename == ".hidden" }?.path == "/Renamed/.hidden")
@@ -193,7 +200,7 @@ func journalPersistsSpaceSelectionRenameAndVisibilityChanges() async throws {
     #expect(deleted == [ProviderSpaceIdentifier.folder("space"), ProviderSpaceIdentifier.item("visible", spaceID: "space"), ProviderSpaceIdentifier.item("later", spaceID: "space"), ProviderSpaceIdentifier.item("hidden", spaceID: "space")])
     #expect(try await fixture.store.items(accountID: fixture.account.id).count == 3)
     anchor = page.anchor
-    await selected.set([ProviderSpace(id: "space", name: "Renamed", backend: { showHidden })])
+    await selected.set([ProviderSpace(id: "space", name: "Renamed", metadataID: fixture.account.id, presentationPolicy: FileProviderPresentationPolicy(showHiddenFiles: true), backend: { showHidden })])
     page = try await adapter().changePage(in: .workingSet, from: anchor)
     #expect(Set(page.updated.map(\.filename)) == ["Renamed", "visible.txt", "later.txt", ".hidden"])
 }

@@ -27,12 +27,16 @@ public struct ProviderSpace: Sendable {
     public var id: String
     public var name: String
     public var rootPath: String
+    public var metadataID: UUID?
+    public var presentationPolicy: FileProviderPresentationPolicy
     public var backend: @Sendable () async throws -> any FileProviderBackend
 
-    public init(id: String, name: String, rootPath: String = "/", backend: @escaping @Sendable () async throws -> any FileProviderBackend) {
+    public init(id: String, name: String, rootPath: String = "/", metadataID: UUID? = nil, presentationPolicy: FileProviderPresentationPolicy = FileProviderPresentationPolicy(), backend: @escaping @Sendable () async throws -> any FileProviderBackend) {
         self.id = id
         self.name = name
         self.rootPath = rootPath
+        self.metadataID = metadataID
+        self.presentationPolicy = presentationPolicy
         self.backend = backend
     }
 

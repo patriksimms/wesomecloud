@@ -1209,8 +1209,18 @@ func unifiedRuntimeKeepsSpaceListingsAndDownloadsSeparateAcrossRestartAndSelecti
     let factory = ProductionExtensionRuntimeFactory(paths: paths, transport: SpaceRuntimeTransport())
     let resolver = ProductionDomainRuntimeResolver(accounts: accounts, credentials: credentials, factory: factory)
     let runtime = try await resolver.makeRuntime(domainID: ProviderSpaceIdentifier.domainID)
+    // Local root enumeration and journal boundaries must work before credentials exist.
+    let rootObserver = EnumerationObserver()
+    let rootEnumerator = WesomeFileProviderEnumerator(adapter: runtime.adapter, container: .root)
+    rootEnumerator.enumerateItems(for: rootObserver, startingAt: NSFileProviderPage(Data()))
+    #expect(try await rootObserver.result().items.map(\.filename) == ["AM", "HR"])
     let folders = try await runtime.adapter.enumerate(container: .root).items
     #expect(folders.map(\.filename) == ["AM", "HR"])
+    let localJournalAnchor = try await runtime.adapter.currentSyncAnchor(in: .workingSet)
+    let metadata = try SQLiteMetadataStore(databaseURL: paths.database)
+    try await metadata.upsert(accountID: record.domains[0].metadataID, items: [RemoteItem(id: "queued", parentID: nil, name: "Queued.txt", path: "/Queued.txt", kind: .file)])
+    let localChanges = try await runtime.adapter.changePage(in: .workingSet, from: localJournalAnchor)
+    #expect(localChanges.updated.map(\.filename) == ["Queued.txt"])
     try await credentials.save(Credential(accountID: account.id, username: "alice", secret: "secret", kind: .appPassword))
     let amFolder = folders[0]
     let hrFolder = folders[1]

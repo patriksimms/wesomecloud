@@ -157,8 +157,8 @@ extension SpaceFileProviderBackend: FileProviderJournalProviding {
     private func journalPresentations() async throws -> [JournalPresentation] {
         var result: [JournalPresentation] = []
         for space in try await spaces() {
-            guard let coordinator = try await space.backend() as? FileProviderCoordinator else { throw ProviderJournalError.expired }
-            result.append(JournalPresentation(spaceID: space.id, metadataID: coordinator.metadataID, name: space.name, rootPath: space.rootPath, policy: coordinator.presentationPolicy))
+            guard let metadataID = space.metadataID else { throw ProviderJournalError.expired }
+            result.append(JournalPresentation(spaceID: space.id, metadataID: metadataID, name: space.name, rootPath: space.rootPath, policy: space.presentationPolicy))
         }
         return result
     }

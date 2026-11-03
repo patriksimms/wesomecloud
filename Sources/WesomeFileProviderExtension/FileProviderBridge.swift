@@ -207,8 +207,9 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
                 let runtime = try await runtimeProvider()
                 let container = await resolvedContainer(itemCache: runtime.itemCache)
                 // Capture the boundary before listing. Every concurrent mutation remains replayable.
-                _ = try await anchorState.initial { try await runtime.adapter.currentSyncAnchor(in: container) }
-                let providerPage = try await runtime.adapter.enumerate(container: container, pageToken: page.providerPageToken, pageSize: observer.suggestedPageSize)
+                let pageToken = page.providerPageToken
+                _ = try await anchorState.initial(refresh: pageToken == nil) { try await runtime.adapter.currentSyncAnchor(in: container) }
+                let providerPage = try await runtime.adapter.enumerate(container: container, pageToken: pageToken, pageSize: observer.suggestedPageSize)
                 try Task.checkCancellation()
                 await logger.info("initial enumeration items=\(providerPage.items.count) continuation=\(providerPage.nextPageToken != nil)")
                 await runtime.itemCache.register(providerPage, container: container)
@@ -236,6 +237,7 @@ public final class WesomeFileProviderEnumerator: NSObject, NSFileProviderEnumera
                 await logger.info("incremental delivered updates=\(changes.updated.count) deletions=\(changes.deleted.count) position=\(changes.position) upper=\(changes.upperBound) continuation=\(changes.moreComing)")
             } catch {
                 if error is ProviderJournalError {
+                    await anchorState.reset()
                     await logger.warning("incremental recovery=syncAnchorExpired freshEnumerationRequired=true")
                 }
                 await logger.error("enumerateChanges failed container=\(DiagnosticRedactor.reference(containerIdentifier ?? "adapter")) error=\(String(describing: error))")
@@ -324,7 +326,10 @@ private final class AnchorCompletionBox: @unchecked Sendable {
 private actor InitialSyncAnchorState {
     private var task: Task<Data, Error>?
 
-    func initial(_ load: @escaping @Sendable () async throws -> Data) async throws -> Data {
+    func reset() { task = nil }
+
+    func initial(refresh: Bool = false, _ load: @escaping @Sendable () async throws -> Data) async throws -> Data {
+        if refresh { task = nil }
         if let task { return try await task.value }
         let task = Task { try await load() }
         self.task = task

@@ -238,6 +238,7 @@ public actor ProductionDomainRuntimeResolver {
     }
 
     private func selectedSpaces() async throws -> [ProviderSpace] {
+        let filePreferences = try await preferences.load().files
         let records = try await accounts.records()
         let accountIDs = Set(records.map(\.id))
         accountCredentials = accountCredentials.filter { accountIDs.contains($0.key) }
@@ -245,7 +246,7 @@ public actor ProductionDomainRuntimeResolver {
         spaceCoordinators = spaceCoordinators.filter { selectedIDs.contains($0.key) }
         return records.flatMap { record in
             record.domains.map { domain in
-                ProviderSpace(id: domain.id, name: domain.displayName, rootPath: domain.rootPath) {
+                ProviderSpace(id: domain.id, name: domain.displayName, rootPath: domain.rootPath, metadataID: domain.metadataID, presentationPolicy: filePreferences.fileProviderPresentationPolicy) {
                     try await self.coordinator(for: record.selecting(domain))
                 }
             }
