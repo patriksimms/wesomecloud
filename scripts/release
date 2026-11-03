@@ -156,6 +156,8 @@ def publish(repo, branch, version, build, folder, stable):
             raise ValueError(f"Prepared artifact changed: {name}. Refusing to publish.")
     if digest(folder / "updates/appcast.xml") != manifest["feed_sha256"]:
         raise ValueError("Prepared appcast changed. Refusing to publish.")
+    if digest(folder / "notes.md") != manifest["notes_sha256"]:
+        raise ValueError("Prepared release notes changed. Refusing to publish.")
     check_feed(fetch(manifest["feed_url"]), version, build)
     if not git("tag", "--list", tag):
         run("git", "tag", "-a", tag, revision, "-m", f"WesomeCloud {version} build {build}")
@@ -341,7 +343,8 @@ def main():
         (folder / "manifest.json").write_text(json.dumps({"repo": repo, "branch": branch, "version": version, "build": build,
             "revision": git("rev-parse", "HEAD"), "stable": args.stable, "assets": assets,
             "page_url": page_url, "feed_url": feed_url,
-            "feed_sha256": digest(folder / "updates/appcast.xml")}, indent=2) + "\n")
+            "feed_sha256": digest(folder / "updates/appcast.xml"),
+            "notes_sha256": digest(folder / "notes.md")}, indent=2) + "\n")
         print(f"Built {version} build {build} from merged main {source_revision}. Publish with: scripts/release {version} --publish"
               + (" --stable" if args.stable else ""), flush=True)
 

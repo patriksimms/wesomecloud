@@ -107,6 +107,7 @@ class Publication(unittest.TestCase):
         self.manifest = {"repo": "test/repo", "branch": "main", "version": "0.1.4", "build": 6, "revision": self.revision, "stable": False,
                          "assets": {name: hashlib.sha256(content).hexdigest() for name, content in self.assets.items()},
                          "feed_sha256": hashlib.sha256(feed("0.1.4", 6)).hexdigest(),
+                         "notes_sha256": hashlib.sha256(b"Test notes").hexdigest(),
                          "feed_url": "https://example.invalid/appcast.xml", "page_url": "https://example.invalid/"}
         (self.folder / "manifest.json").write_text(json.dumps(self.manifest))
         self.expected_asset_names = set(self.assets)
@@ -235,12 +236,19 @@ class Publication(unittest.TestCase):
         self.assertEqual(self.published_feed, feed("0.1.5", 7))
 
     def test_changed_local_artifact_is_rejected_before_push_or_publication(self):
-        (self.folder / "WesomeCloud-0.1.4.zip").write_bytes(b"changed")
-        with self.assertRaisesRegex(ValueError, "artifact changed"):
-            self.publish()
-        self.assertIsNone(self.hosted)
-        result = subprocess.run(["git", "--git-dir=../remote.git", "show-ref", "--verify", "refs/tags/v0.1.4"], capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
+        for name in ("WesomeCloud-0.1.4.zip", "notes.md"):
+            with self.subTest(name=name):
+                path = self.folder / name
+                original = path.read_bytes()
+                path.write_bytes(b"changed")
+                try:
+                    with self.assertRaisesRegex(ValueError, "changed"):
+                        self.publish()
+                    self.assertIsNone(self.hosted)
+                    result = subprocess.run(["git", "--git-dir=../remote.git", "show-ref", "--verify", "refs/tags/v0.1.4"], capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                finally:
+                    path.write_bytes(original)
 
     def test_preparation_requires_a_merge_before_build_and_separate_publication(self):
         release.git("tag", "-d", "v0.1.4")
