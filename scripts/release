@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and publish a local, Keychain-signed WesomeCloud release."""
+"""Prepare a release PR, build merged main, then publish its checked artifacts."""
 import argparse
 import base64
 import fcntl
@@ -127,7 +127,20 @@ def release_info(repo, tag):
     return next((item for page in pages for item in page if item["tag_name"] == tag), None)
 
 
+def require_main_revision():
+    if git("symbolic-ref", "--short", "HEAD") != "main":
+        raise ValueError("Build and publication require the main branch. Merge the release preparation PR first.")
+    run("git", "fetch", "origin", "main")
+    revision = git("rev-parse", "HEAD")
+    if revision != git("rev-parse", "refs/remotes/origin/main"):
+        raise ValueError("HEAD must equal origin/main. Fast-forward main before releasing.")
+    if git("status", "--porcelain"):
+        raise ValueError("Releases require a clean working tree.")
+    return revision
+
+
 def publish(repo, branch, version, build, folder, stable):
+    require_main_revision()
     tag = f"v{version}"
     manifest = json.loads((folder / "manifest.json").read_text())
     revision = manifest["revision"]
@@ -143,12 +156,14 @@ def publish(repo, branch, version, build, folder, stable):
             raise ValueError(f"Prepared artifact changed: {name}. Refusing to publish.")
     if digest(folder / "updates/appcast.xml") != manifest["feed_sha256"]:
         raise ValueError("Prepared appcast changed. Refusing to publish.")
+    if digest(folder / "notes.md") != manifest["notes_sha256"]:
+        raise ValueError("Prepared release notes changed. Refusing to publish.")
     check_feed(fetch(manifest["feed_url"]), version, build)
     if not git("tag", "--list", tag):
-        run("git", "tag", "-a", tag, "-m", f"WesomeCloud {version} build {build}")
+        run("git", "tag", "-a", tag, revision, "-m", f"WesomeCloud {version} build {build}")
     if git("rev-parse", f"{tag}^{{commit}}") != revision:
         raise ValueError("The existing tag does not point to the prepared release commit.")
-    run("git", "push", "--atomic", "origin", f"HEAD:refs/heads/{branch}", f"refs/tags/{tag}")
+    run("git", "push", "origin", f"refs/tags/{tag}")
     releases = release_info(repo, tag)
     if releases is None:
         # Draft first: a failed upload must not leave a public, incomplete release.
@@ -171,7 +186,8 @@ def publish(repo, branch, version, build, folder, stable):
         if digest(downloads / name) != expected:
             raise ValueError(f"GitHub asset checksum mismatch: {name}.")
     if releases["draft"]:
-        run("gh", "release", "edit", tag, "--repo", repo, "--draft=false", f"--prerelease={str(not stable).lower()}")
+        run("gh", "release", "edit", tag, "--repo", repo, "--notes-file", str(folder / "notes.md"),
+            "--draft=false", f"--prerelease={str(not stable).lower()}")
     # Check anonymous public downloads before pointing users' updaters at them.
     prefix = f"https://github.com/{repo}/releases/download/{tag}/"
     for name, expected in assets.items():
@@ -209,25 +225,33 @@ def publish(repo, branch, version, build, folder, stable):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("version", help="patch, minor, major, or an explicit higher x.y.z version")
-    parser.add_argument("--dry-run", action="store_true", help="show the plan without builds, writes or network requests")
-    parser.add_argument("--resume", action="store_true", help="continue publishing an already prepared/tagged version")
-    parser.add_argument("--stable", action="store_true", help="publish a regular release instead of a preview")
-    parser.add_argument("--notes-file", type=Path, help="release notes to include instead of the default installation notes")
+    parser.add_argument("version", help="next bump/version with --prepare; exact committed version for build/publication")
+    phase = parser.add_mutually_exclusive_group()
+    phase.add_argument("--prepare", action="store_true", help="update versions and release notes for a preparation PR, without building or publishing")
+    phase.add_argument("--publish", "--resume", dest="publish", action="store_true", help="publish previously built artifacts from merged main without rebuilding")
+    parser.add_argument("--dry-run", action="store_true", help="show the phase without builds, writes or network requests")
+    parser.add_argument("--stable", action="store_true", help="use a regular release instead of a preview")
+    parser.add_argument("--notes-file", type=Path, help="changelog to commit with --prepare")
     args = parser.parse_args()
     if args.notes_file:
         args.notes_file = args.notes_file.resolve()
     os.chdir(Path(__file__).resolve().parent.parent)
     current, current_build = metadata()
-    version = args.version if args.resume else next_version(current, args.version)
+    version = next_version(current, args.version) if args.prepare else args.version
+    if not args.prepare and version != current:
+        raise ValueError("Build/publication version must match committed metadata. Use --prepare on a release branch first.")
+    if args.notes_file and not args.prepare:
+        raise ValueError("--notes-file belongs to --prepare; builds use the committed release notes.")
     version_tuple(version)
     branch = git("symbolic-ref", "--short", "HEAD")
     repo = repository()
     folder = Path("build/releases") / f"v{version}"
+    notes_path = Path("docs/releases") / f"{version}.md"
     if args.dry_run:
-        print(f"{'Resume' if args.resume else 'Release'} {current} ({current_build}) -> {version} "
-              f"({'existing build' if args.resume else current_build + 1}), {'stable' if args.stable else 'preview'}")
-        print(f"Test, sign/notarize, commit/tag v{version}, push {branch} to {repo}, publish assets, then gh-pages.")
+        phase_name = "Prepare" if args.prepare else "Publish" if args.publish else "Build"
+        print(f"{phase_name} {current} ({current_build}) -> {version} "
+              f"({current_build + 1 if args.prepare else current_build}), {'stable' if args.stable else 'preview'}")
+        print("Preparation edits versions/notes only. Build requires merged origin/main. Publication uses the exact built commit.")
         return
     with (Path(git("rev-parse", "--git-common-dir")) / "wesomecloud-release.lock").open("a") as lock:
         try:
@@ -236,11 +260,13 @@ def main():
             raise ValueError("Another release is running in this repository.")
         if git("status", "--porcelain"):
             raise ValueError("Commit your changes first. Releases require a clean working tree.")
-        if args.resume:
-            if version != current:
-                raise ValueError("Resume version must match the current plists.")
+        if args.publish:
             publish(repo, branch, version, current_build, folder, args.stable)
             return
+        if args.prepare and branch == "main":
+            raise ValueError("Prepare on a release branch, then merge its PR before building main.")
+        if not args.prepare:
+            require_main_revision()
         if folder.exists():
             raise ValueError(f"{folder} already exists. Inspect it before starting another release of this version.")
         for tool in ("gh", "swift", "xcodebuild", "xcrun", "xcodegen"):
@@ -266,17 +292,26 @@ def main():
         for published_version, _ in published:
             if version_tuple(version) <= version_tuple(published_version):
                 raise ValueError("The new version must be greater than every version in the public feed.")
-        build = max([current_build] + [number for _, number in published]) + 1
+        if args.prepare:
+            build = max([current_build] + [number for _, number in published]) + 1
+            if not args.notes_file:
+                raise ValueError("Supply --notes-file with a changelog based on changes since the previous release.")
+            notes = args.notes_file.read_text()
+            if not notes.strip():
+                raise ValueError("Release notes must not be empty.")
+            if notes_path.exists():
+                raise ValueError(f"{notes_path} already exists.")
+            bump_plists(version, build)
+            notes_path.parent.mkdir(parents=True, exist_ok=True)
+            notes_path.write_text(notes)
+            print(f"Prepared version {version} build {build} and {notes_path}. Commit and merge the preparation PR; no artifacts built or published.")
+            return
+        build = current_build
+        if build <= max([0] + [number for _, number in published]):
+            raise ValueError("The committed build number must exceed every published build.")
+        notes = notes_path.read_text()
         run("scripts/validate-release-signing.sh")
-        notes = args.notes_file.read_text() if args.notes_file else (
-            f"WesomeCloud {version} for Apple Silicon, macOS 15 or later.\n\n"
-            "Open the DMG and drag WesomeCloud into Applications. Existing 0.1.3 or later "
-            "installations can use Check for Updates.\n\n"
-            "Developer ID signed, notarized and stapled. The feed and update ZIP are Sparkle signed. "
-            "Source, licenses and SHA-256 checksums are attached.\n")
         source_revision = git("rev-parse", "HEAD")
-        originals = bump_plists(version, build)
-        bumped = {path: Path(path).read_text() for path in PLISTS}
         try:
             folder.mkdir(parents=True)
             env = dict(os.environ, WESOME_CLOUD_UPDATES_PATH=str(folder.resolve() / "updates"),
@@ -291,40 +326,29 @@ def main():
             run("scripts/validate-release-signing.sh", "--archive", env=env)
             if git("rev-parse", "HEAD") != source_revision or git("symbolic-ref", "--short", "HEAD") != branch:
                 raise ValueError("Git HEAD or branch changed during the build. Refusing to release different source.")
-            changed = set(git("diff", "--name-only", "HEAD").splitlines())
-            if changed != set(PLISTS) or git("ls-files", "--others", "--exclude-standard"):
-                raise ValueError("Working tree changed during the build. Commit your changes and rebuild.")
-            if any(Path(path).read_text() != text for path, text in bumped.items()):
-                raise ValueError("Versions changed during the build. Refusing to tag different source.")
-            run("git", "add", *PLISTS)
-            run("git", "commit", "-m", f"chore: release {version}")
+            require_main_revision()
         except BaseException:
-            # Restore only the two version files if preparation fails before a commit.
-            if git("rev-parse", "HEAD") == source_revision and git("diff", "HEAD", "--", *PLISTS):
-                for path, text in originals.items():
-                    if Path(path).read_text() == bumped[path]:
-                        Path(path).write_text(text)
-                run("git", "reset", "--", *PLISTS)
-            print(f"Preparation failed; unchanged release version edits restored. Inspect/remove {folder} before retrying.", file=sys.stderr)
+            print(f"Build failed; no versions, commits, tags or public files changed. Inspect/remove {folder} before rebuilding.", file=sys.stderr)
             raise
         shutil.copyfile(folder / "updates" / f"WesomeCloud-{version}.zip", folder / f"WesomeCloud-{version}.zip")
         for source in ("LICENSE", "NOTICE", "docs/Sparkle-LICENSE.txt"):
-            shutil.copyfile(source, folder / Path(source).name)
+            (folder / Path(source).name).write_bytes(
+                subprocess.check_output(["git", "show", f"{source_revision}:{source}"]))
         source_name = f"WesomeCloud-{version}-source.tar.gz"
         run("git", "archive", "--format=tar.gz", f"--prefix=WesomeCloud-{version}/",
-            f"--output={folder / source_name}", "HEAD")
+            f"--output={folder / source_name}", source_revision)
         names = [f"WesomeCloud-{version}.dmg", f"WesomeCloud-{version}.zip", source_name, "LICENSE", "NOTICE", "Sparkle-LICENSE.txt"]
         assets = {name: digest(folder / name) for name in names}
         (folder / "SHA256SUMS.txt").write_text("".join(f"{checksum}  {name}\n" for name, checksum in assets.items()))
         assets["SHA256SUMS.txt"] = digest(folder / "SHA256SUMS.txt")
         (folder / "notes.md").write_text(notes)
         (folder / "manifest.json").write_text(json.dumps({"repo": repo, "branch": branch, "version": version, "build": build,
-            "revision": git("rev-parse", "HEAD"), "stable": args.stable, "assets": assets,
+            "revision": source_revision, "stable": args.stable, "assets": assets,
             "page_url": page_url, "feed_url": feed_url,
-            "feed_sha256": digest(folder / "updates/appcast.xml")}, indent=2) + "\n")
-        print(f"Prepared {version} build {build}. If publication fails: scripts/release {version} --resume"
+            "feed_sha256": digest(folder / "updates/appcast.xml"),
+            "notes_sha256": digest(folder / "notes.md")}, indent=2) + "\n")
+        print(f"Built {version} build {build} from merged main {source_revision}. Publish with: scripts/release {version} --publish"
               + (" --stable" if args.stable else ""), flush=True)
-        publish(repo, branch, version, build, folder, args.stable)
 
 if __name__ == "__main__":
     try:

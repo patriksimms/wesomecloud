@@ -11,7 +11,6 @@ When creating a release:
 4. Publish the GitHub release and update the public download page and Sparkle
    feed only after the preceding steps succeed. This also applies to previews.
 
-`scripts/release` currently combines version bumping, building, committing,
-tagging, and publication from the current branch. Before using it for a new
-release, separate preparation from publication so the sequence above is
-enforced. A release request does not authorize publishing an unmerged branch.
+Use `scripts/release <bump> --prepare --notes-file <changelog>` on a release
+branch, then follow the [release workflow](docs/development.md#publish-a-new-version)
+after merging. Build and publication require clean `main` matching `origin/main`.

@@ -79,7 +79,8 @@ scripts/validate-packaging.sh --require-generated
 
 An unsigned build verifies packaging; Finder integration needs a signed app
 and extension. Release a new version on the signing Mac with
-`scripts/release patch`, `minor`, or `major` after loading `.envrc`. See
+`scripts/release patch --prepare --notes-file <changelog>` after loading `.envrc`,
+then merge the preparation PR before building and publishing from `main`. See
 [development and release notes](docs/development.md#publish-a-new-version) for
 signing, notarization, and update configuration.
 

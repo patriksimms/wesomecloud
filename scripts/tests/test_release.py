@@ -90,10 +90,13 @@ class Publication(unittest.TestCase):
             release.git("config", key, value)
         release.git("remote", "add", "origin", "../remote.git")
         Path("source.txt").write_text("release source\n")
-        release.git("add", "source.txt")
+        Path(".gitignore").write_text("build/\n.envrc\n")
+        release.git("add", "source.txt", ".gitignore")
         release.git("commit", "-qm", "release source")
         release.git("tag", "-a", "v0.1.4", "-m", "release")
         self.revision = release.git("rev-parse", "HEAD")
+        release.git("push", "-q", "origin", "main")
+        release.git("fetch", "-q", "origin", "main")
         self.folder = Path("build/releases/v0.1.4")
         (self.folder / "updates").mkdir(parents=True)
         (self.folder / "updates/appcast.xml").write_bytes(feed("0.1.4", 6))
@@ -104,6 +107,7 @@ class Publication(unittest.TestCase):
         self.manifest = {"repo": "test/repo", "branch": "main", "version": "0.1.4", "build": 6, "revision": self.revision, "stable": False,
                          "assets": {name: hashlib.sha256(content).hexdigest() for name, content in self.assets.items()},
                          "feed_sha256": hashlib.sha256(feed("0.1.4", 6)).hexdigest(),
+                         "notes_sha256": hashlib.sha256(b"Test notes").hexdigest(),
                          "feed_url": "https://example.invalid/appcast.xml", "page_url": "https://example.invalid/"}
         (self.folder / "manifest.json").write_text(json.dumps(self.manifest))
         self.expected_asset_names = set(self.assets)
@@ -130,7 +134,8 @@ class Publication(unittest.TestCase):
         if operation == "create":
             if self.hosted is not None:
                 raise subprocess.CalledProcessError(422, args)
-            self.hosted = {"tag_name": "v0.1.4", "draft": True, "assets": []}
+            self.hosted = {"tag_name": "v0.1.4", "draft": True, "assets": [],
+                           "body": Path(args[args.index("--notes-file") + 1]).read_text()}
         elif operation == "upload":
             for filename in args[6:]:
                 name = Path(filename).name
@@ -145,6 +150,8 @@ class Publication(unittest.TestCase):
             for name, content in self.remote_assets.items():
                 (destination / name).write_bytes(b"corrupt" if self.corrupt_download else content)
         elif operation == "edit":
+            if "--notes-file" in args:
+                self.hosted["body"] = Path(args[args.index("--notes-file") + 1]).read_text()
             self.hosted["draft"] = False
             if self.downgrade_race:
                 self.published_feed = feed("0.1.5", 7)
@@ -212,7 +219,9 @@ class Publication(unittest.TestCase):
             self.publish()
         self.assertTrue(self.hosted["draft"])
         self.assertEqual(self.published_feed, feed())
+        self.hosted["body"] = "Draft edited after the failed upload"
         self.publish()
+        self.assertEqual(self.hosted["body"], "Test notes")
         self.assertEqual(self.published_feed, feed("0.1.4", 6))
         self.assertIn(b"Download WesomeCloud 0.1.4", self.published_page)
         self.assertEqual(release.git("--git-dir=../remote.git", "rev-parse", "v0.1.4^{commit}"), self.revision)
@@ -232,14 +241,21 @@ class Publication(unittest.TestCase):
         self.assertEqual(self.published_feed, feed("0.1.5", 7))
 
     def test_changed_local_artifact_is_rejected_before_push_or_publication(self):
-        (self.folder / "WesomeCloud-0.1.4.zip").write_bytes(b"changed")
-        with self.assertRaisesRegex(ValueError, "artifact changed"):
-            self.publish()
-        self.assertIsNone(self.hosted)
-        result = subprocess.run(["git", "--git-dir=../remote.git", "show-ref"], capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
+        for name in ("WesomeCloud-0.1.4.zip", "notes.md"):
+            with self.subTest(name=name):
+                path = self.folder / name
+                original = path.read_bytes()
+                path.write_bytes(b"changed")
+                try:
+                    with self.assertRaisesRegex(ValueError, "changed"):
+                        self.publish()
+                    self.assertIsNone(self.hosted)
+                    result = subprocess.run(["git", "--git-dir=../remote.git", "show-ref", "--verify", "refs/tags/v0.1.4"], capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                finally:
+                    path.write_bytes(original)
 
-    def test_complete_release_tags_and_publishes_the_bumped_source(self):
+    def test_preparation_requires_a_merge_before_build_and_separate_publication(self):
         release.git("tag", "-d", "v0.1.4")
         Path("AppHost").mkdir()
         for path in release.PLISTS:
@@ -251,11 +267,24 @@ class Publication(unittest.TestCase):
         Path(".envrc").write_text("private local settings")
         release.git("add", "AppHost", "docs", "LICENSE", "NOTICE", ".gitignore")
         release.git("commit", "-qm", "app source")
+        notes = Path(self.temp.name) / "notes.md"
+        notes.write_text("Finder updates survive extension restarts.\n")
+        release.git("checkout", "-qb", "release-preparation")
         # Publication fixtures are separate from the fresh preparation directory.
         import shutil
         shutil.rmtree(self.folder)
         self.expected_asset_names = {"WesomeCloud-0.1.4.zip", "WesomeCloud-0.1.4.dmg", "WesomeCloud-0.1.4-source.tar.gz", "LICENSE", "NOTICE", "Sparkle-LICENSE.txt", "SHA256SUMS.txt"}
+        original_copy = release.shutil.copyfile
+        def copy_with_concurrent_license_edit(source, destination):
+            result = original_copy(source, destination)
+            if Path(source) == self.folder / "updates/WesomeCloud-0.1.4.zip":
+                for license_path in ("LICENSE", "NOTICE", "docs/Sparkle-LICENSE.txt"):
+                    Path(license_path).write_text("concurrent license edit")
+            return result
         def builder(*args, **kwargs):
+            if args[:2] == ("git", "archive"):
+                # Another Git operation can move main after the post-build validation.
+                release.git("commit", "--allow-empty", "-qm", "concurrent commit")
             if args[0] == "scripts/validate-release-signing.sh":
                 if "--archive" in args:
                     env = kwargs["env"]
@@ -274,11 +303,41 @@ class Publication(unittest.TestCase):
              patch.object(release.shutil, "which", return_value="available"), \
              patch.dict(os.environ, {"WESOME_CLOUD_APPCAST_URL": self.manifest["feed_url"], "WESOME_CLOUD_DOWNLOAD_URL_PREFIX": ""}), \
              patch.object(release, "run", side_effect=builder), \
-             patch("sys.argv", ["release", "patch"]):
+             patch("sys.argv", ["release", "patch", "--prepare", "--notes-file", str(notes)]):
             release.main()
-        self.assertEqual(release.metadata(), ("0.1.4", 6))
+            self.assertEqual(release.metadata(), ("0.1.4", 6))
+            self.assertFalse(self.folder.exists())
+            self.assertIsNone(self.hosted)
+            self.assertEqual(release.git("tag", "--list", "v0.1.4"), "")
+            release.git("add", "AppHost", "docs")
+            release.git("commit", "-qm", "prepare 0.1.4")
+            with patch("sys.argv", ["release", "0.1.4"]), self.assertRaisesRegex(ValueError, "main branch"):
+                release.main()
+            with self.assertRaisesRegex(ValueError, "main branch"):
+                self.publish()
+            release.git("checkout", "-q", "main")
+            release.git("merge", "-q", "--no-ff", "release-preparation", "-m", "merge preparation")
+            with patch("sys.argv", ["release", "0.1.4"]), self.assertRaisesRegex(ValueError, "origin/main"):
+                release.main()
+            release.git("push", "-q", "origin", "main")
+            merged_revision = release.git("rev-parse", "HEAD")
+            with patch("sys.argv", ["release", "0.1.4"]), \
+                 patch.object(release.shutil, "copyfile", side_effect=copy_with_concurrent_license_edit):
+                release.main()
+            self.assertIsNone(self.hosted)
+            self.assertEqual(self.published_feed, feed())
+            self.assertEqual(release.git("tag", "--list", "v0.1.4"), "")
+            self.assertEqual(json.loads((self.folder / "manifest.json").read_text())["revision"], merged_revision)
+            for name in ("LICENSE", "NOTICE", "Sparkle-LICENSE.txt"):
+                self.assertEqual((self.folder / name).read_text(), "license notice")
+            with tarfile.open(self.folder / "WesomeCloud-0.1.4-source.tar.gz") as archive:
+                self.assertEqual(archive.pax_headers["comment"], merged_revision)
+            release.git("reset", "--hard", merged_revision)
+            with patch("sys.argv", ["release", "0.1.4", "--publish"]):
+                release.main()
         self.assertEqual(release.git("status", "--porcelain"), "")
-        self.assertEqual(release.git("rev-parse", "v0.1.4^{commit}"), release.git("rev-parse", "HEAD"))
+        self.assertEqual(release.git("rev-parse", "HEAD"), merged_revision)
+        self.assertEqual(release.git("rev-parse", "v0.1.4^{commit}"), merged_revision)
         self.assertEqual(self.published_feed, feed("0.1.4", 6))
         with tarfile.open(self.folder / "WesomeCloud-0.1.4-source.tar.gz") as archive:
             info = plistlib.loads(archive.extractfile("WesomeCloud-0.1.4/AppHost/Info.plist").read())
@@ -296,27 +355,31 @@ class Publication(unittest.TestCase):
         with patch.object(release, "__file__", str(Path("scripts/release").resolve())), \
              patch.object(release, "api", side_effect=AssertionError("Dry run contacted GitHub")), \
              patch.object(release, "fetch", side_effect=AssertionError("Dry run downloaded files")), \
-             patch("sys.argv", ["release", "patch", "--dry-run"]), contextlib.redirect_stdout(output):
+             patch("sys.argv", ["release", "patch", "--prepare", "--dry-run"]), contextlib.redirect_stdout(output):
             release.main()
         self.assertIn("0.1.3 (5) -> 0.1.4 (6)", output.getvalue())
         self.assertEqual({path: Path(path).read_bytes() for path in release.PLISTS}, before)
         self.assertEqual(release.git("status", "--porcelain"), status)
         self.assertEqual(release.git("tag", "--list"), "v0.1.4")
 
-    def test_preparation_failure_restores_both_versions_and_creates_no_tag(self):
+    def test_failed_main_build_keeps_committed_versions_and_creates_no_tag(self):
+        import shutil
+        shutil.rmtree(self.folder)
+        release.git("tag", "-d", "v0.1.4")
         Path("AppHost").mkdir()
         for path in release.PLISTS:
-            Path(path).write_bytes(plistlib.dumps({"CFBundleShortVersionString": "0.1.3", "CFBundleVersion": "5"}))
-        Path(".gitignore").write_text("build/\n")
-        release.git("add", "AppHost", ".gitignore")
-        release.git("commit", "-qm", "app metadata")
+            Path(path).write_bytes(plistlib.dumps({"CFBundleShortVersionString": "0.1.4", "CFBundleVersion": "6"}))
+        Path("docs/releases").mkdir(parents=True)
+        Path("docs/releases/0.1.4.md").write_text("Changes since the previous release")
+        release.git("add", "AppHost", "docs")
+        release.git("commit", "-qm", "release metadata")
+        release.git("push", "-q", "origin", "main")
         before = {path: Path(path).read_bytes() for path in release.PLISTS}
-        self.published_feed = feed("0.1.3", 10)
+        revision = release.git("rev-parse", "HEAD")
         def failing_builder(*args, **kwargs):
             if args[0] == "scripts/validate-release-signing.sh":
                 return None
             if args[0] == "swift":
-                self.assertEqual(release.metadata(), ("0.2.0", 11))
                 raise subprocess.CalledProcessError(1, args)
             return self.command(*args, **kwargs)
         with patch.object(release, "__file__", str(Path("scripts/release").resolve())), \
@@ -324,12 +387,14 @@ class Publication(unittest.TestCase):
              patch.object(release.shutil, "which", return_value="available"), \
              patch.dict(os.environ, {"WESOME_CLOUD_APPCAST_URL": self.manifest["feed_url"], "WESOME_CLOUD_DOWNLOAD_URL_PREFIX": ""}), \
              patch.object(release, "run", side_effect=failing_builder), \
-             patch("sys.argv", ["release", "minor"]):
+             patch("sys.argv", ["release", "0.1.4"]):
             with self.assertRaises(subprocess.CalledProcessError):
                 release.main()
         self.assertEqual({path: Path(path).read_bytes() for path in release.PLISTS}, before)
         self.assertEqual(release.git("status", "--porcelain"), "")
-        self.assertEqual(release.git("tag", "--list", "v0.2.0"), "")
+        self.assertEqual(release.git("rev-parse", "HEAD"), revision)
+        self.assertEqual(release.git("tag", "--list", "v0.1.4"), "")
+        self.assertIsNone(self.hosted)
 
 
 if __name__ == "__main__":

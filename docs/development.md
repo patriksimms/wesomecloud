@@ -50,41 +50,54 @@ scripts/validate-packaging.sh --require-generated --release
 
 ## Publish a new version
 
-On the configured signing Mac, commit your code changes, then run:
+Prepare the release on a dedicated branch of the configured signing Mac:
 
 ```sh
 source .envrc
-scripts/release patch
-# Or: scripts/release minor / scripts/release major
+scripts/release patch --prepare --notes-file /path/to/changelog.md
 ```
 
-Like `npm version`, patch increments the last component, minor resets patch to
-zero, and major resets minor and patch to zero. An explicit higher version also
-works, for example `scripts/release 0.3.0`. Both plists are updated together;
-the integer build number increases past both the local and published build.
+Preparation updates the app and both extension versions/build numbers and
+writes `docs/releases/<version>.md`. Patch, minor, major, and an explicit higher
+version are supported. The build number advances past both the local and
+published build. Inspect commits and merged PRs since the previous release when
+writing the changelog. Commit these changes in a preparation PR and merge it
+into `main` after its checks pass.
 
-The command runs Swift tests and packaging checks, builds/signs/notarizes the
-app and DMG, and generates a signed Sparkle feed in a version-specific folder.
-It creates a release commit and annotated `v<version>` tag, atomically pushes
-the current branch and tag to origin, uploads the DMG, ZIP, exact tagged source,
-licenses and checksums to a draft GitHub release, and verifies downloaded assets.
-It then publishes the release and updates the download page and feed together
-on `gh-pages`. It waits for GitHub Pages to serve the expected files.
+Build only after the preparation is present on `origin/main`:
 
 ```sh
-scripts/release patch --dry-run
-scripts/release minor --stable --notes-file /path/to/release-notes.md
-scripts/release 0.1.4 --resume
+git switch main
+git pull --ff-only
+source .envrc
+scripts/release 0.4.1
 ```
 
-Releases default to previews. `--stable` publishes a regular release. Dry runs
-are read-only and offline; their build number is a local estimate. Resume uses
-the existing tag and checked artifacts without rebuilding or bumping again.
-Keep the same release type when resuming, including `--stable` if originally
-used. If preparation fails before the commit, version edits are restored;
-inspect/remove the failed `build/releases/v<version>` directory before retrying.
-If publication fails, the command prints the exact resume command. Keep that
-folder until publication completes. Existing public assets are never replaced.
+The build requires a clean `main` checkout matching `origin/main`. It runs Swift
+tests and packaging checks, signs and notarizes the app and DMG, and generates
+a signed Sparkle feed under `build/releases/v<version>`. It records the exact
+merged commit in a manifest and attaches that commit's source archive. Building
+does not change versions, create commits or tags, or publish anything.
+
+Publish those checked artifacts in a separate step:
+
+```sh
+scripts/release 0.4.1 --publish
+# --resume is an alias for --publish after a publication failure.
+```
+
+Publication verifies the manifest and checksums, tags the exact built commit,
+and pushes only the tag. It uploads the DMG, ZIP, source, licenses and checksums
+to a draft GitHub release, verifies downloaded assets, then publishes the release
+and updates the public download page and Sparkle feed together on `gh-pages`.
+It verifies that GitHub Pages serves the expected files.
+
+Releases default to previews. Use `--stable` for both build and publication to
+publish a regular release. `--dry-run` is read-only and offline; preparation's
+build number is then a local estimate. Keep the artifact folder until publication
+completes. A failed build leaves committed metadata unchanged; inspect/remove
+its incomplete artifact folder before rebuilding. Publication can resume without
+rebuilding or bumping again. Existing public assets are never replaced.
 
 Requirements: Python 3.9 or later, Git, authenticated `gh`, Swift/Xcode,
 XcodeGen, the configured `.envrc`, and signing/notarization/Sparkle credentials
