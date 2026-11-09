@@ -160,7 +160,7 @@ func schedulerSignalsFileProviderEnumeratorWhenRemoteChangesArrive() async throw
     let result = try await scheduler.runDueWork(for: record)
 
     #expect(result.message == "3 remote changes, 0 queued operations")
-    #expect(await changeSignaler.signaledEnumerators.map(\.domainID) == ["wesomecloud", "wesomecloud", "wesomecloud", "wesomecloud"])
+    #expect(await changeSignaler.signaledEnumerators.map(\.domainID) == ["wesomecloud-v2", "wesomecloud-v2", "wesomecloud-v2", "wesomecloud-v2"])
     #expect(await changeSignaler.signaledEnumerators.map(\.containerItemIdentifier) == [
         "space:ZG9tYWluLTE=",
         "NSFileProviderWorkingSetContainerItemIdentifier",
@@ -564,7 +564,7 @@ func successfulPollRetriesFinderAuthenticationEvenWithoutRemoteChanges() async t
     await runner.set(error: nil)
     let result = try await scheduler.runNow(for: record)
     #expect(result.message == "No changes detected")
-    #expect(await signaler.resolvedAuthenticationDomains == ["wesomecloud"])
+    #expect(await signaler.resolvedAuthenticationDomains == ["wesomecloud-v2"])
 }
 
 @Test
