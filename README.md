@@ -15,7 +15,9 @@ the app rebuilds its Finder location once. Downloaded and unsynced Finder files
 are preserved outside the replacement location. In Finder, choose Go > Go to
 Folder and enter `~/Library/Containers/cloud.wesome.wesomecloud/Data/Library/Application Support/WesomeCloud/Preserved Finder Files`.
 Open the private recovery notes there and use Go > Go to Folder with each
-recorded path. These notes are excluded from diagnostic exports. Check the
+recorded path. These notes are excluded from diagnostic exports. If saving a
+note fails, a local alert shows the copyable path and a Show in Finder action
+before the rebuild continues. Check the
 preserved files for local edits. Selected Spaces, sync caches, and queued uploads
 retain their existing storage IDs.
 

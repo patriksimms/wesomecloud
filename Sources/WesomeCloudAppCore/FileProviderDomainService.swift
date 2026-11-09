@@ -260,6 +260,7 @@ private extension String {
 
 #if canImport(FileProvider)
 import FileProvider
+import AppKit
 
 public final class SystemFileProviderDomainManager: FileProviderDomainManaging, @unchecked Sendable {
     public init() {}
@@ -286,7 +287,27 @@ public final class SystemFileProviderDomainManager: FileProviderDomainManaging, 
         if let preservedURL {
             let recoveryDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appending(path: "WesomeCloud/Preserved Finder Files")
-            try PreservedFinderFiles.record(preservedURL, in: recoveryDirectory)
+            do {
+                try PreservedFinderFiles.record(preservedURL, in: recoveryDirectory)
+            } catch {
+                await WesomeLogger(category: "FileProviderDomain").error("Could not save Finder recovery note: \(error.localizedDescription)")
+                // Removal already succeeded. Show the returned path locally before
+                // continuing the rebuild, rather than losing it in a redacted error.
+                await MainActor.run {
+                    let alert = NSAlert()
+                    alert.messageText = "Finder files were preserved, but the recovery note could not be saved"
+                    alert.informativeText = "Copy this path before closing this alert. In Finder, choose Go > Go to Folder to open it. Check these files for local edits."
+                    let path = NSTextField(wrappingLabelWithString: preservedURL.path)
+                    path.isSelectable = true
+                    path.frame.size = NSSize(width: 420, height: 80)
+                    alert.accessoryView = path
+                    alert.addButton(withTitle: "Show in Finder")
+                    alert.addButton(withTitle: "Continue")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        NSWorkspace.shared.activateFileViewerSelecting([preservedURL])
+                    }
+                }
+            }
             await WesomeLogger(category: "FileProviderDomain").info("Preserved files from retired Finder location at \(preservedURL.path)")
         }
     }
