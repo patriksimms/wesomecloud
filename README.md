@@ -10,6 +10,12 @@ use or return to online-only storage to free up disk space. Selected Spaces appe
 as folders inside a single WesomeCloud location in Finder. Adding or removing a
 Space updates that location without changing the other Spaces.
 
+On upgrading from a version that displayed dotted folder names as documents,
+the app rebuilds its Finder location once. Downloaded and unsynced Finder files
+are preserved outside the replacement location; their location is recorded in
+the diagnostic log. Check those preserved files for local edits. Selected Spaces,
+sync caches, and queued uploads retain their existing storage IDs.
+
 On upgrading from separate Finder locations, the app preserves downloaded and
 unsynced local files when retiring those locations. macOS returns their preserved
 location, which the app logs. Existing sync caches and upload queues keep their

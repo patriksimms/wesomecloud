@@ -4,7 +4,9 @@ import WesomeCloudShared
 
 /// Finder identifiers are scoped to a space; server IDs can repeat across spaces.
 public enum ProviderSpaceIdentifier {
-    public static let domainID = "wesomecloud"
+    // Rebuild Finder's cache: macOS cannot change existing file items into folders.
+    // UnifiedFileProviderDomainManager preserves user data when retiring the old domain.
+    public static let domainID = "wesomecloud-v2"
 
     public static func folder(_ spaceID: String) -> String {
         "space:" + Data(spaceID.utf8).base64EncodedString()

@@ -106,13 +106,42 @@ private actor PreservingDomainManager: FileProviderDomainManaging {
     let manager = MemoryFileProviderDomainManager()
     var preserved: [String] = []
 
-    func register(_ domain: CloudDomain) async throws { try await manager.register(domain) }
+    func register(_ domain: CloudDomain) async throws {
+        guard try await manager.domains().allSatisfy({ $0.id == domain.id || $0.displayName != domain.displayName }) else {
+            throw WesomeCloudError.unsupported("Finder location already exists")
+        }
+        try await manager.register(domain)
+    }
     func remove(domainID: String) async throws { try await manager.remove(domainID: domainID) }
     func removePreservingUserData(domainID: String) async throws {
         preserved.append(domainID)
         try await manager.remove(domainID: domainID)
     }
     func domains() async throws -> [CloudDomain] { try await manager.domains() }
+}
+
+@Test
+func unifiedDomainRestoreRebuildsOldAggregateOnceAndKeepsSelections() async throws {
+    let account = Account(serverURL: URL(string: "https://cloud.example/")!, username: "alice")
+    let selection = CloudDomain(id: "personal", accountID: account.id, displayName: "alice@example.com", storageID: UUID())
+    let oldDomain = CloudDomain(id: "wesomecloud", accountID: account.id, displayName: "WesomeCloud")
+    let manager = PreservingDomainManager()
+    try await manager.register(oldDomain)
+    let repository = MemoryAccountRepository()
+    try await repository.saveDomain(selection)
+    let service = FileProviderDomainService(
+        manager: UnifiedFileProviderDomainManager(manager: manager), repository: repository
+    )
+
+    try await service.restore([selection])
+
+    #expect(try await manager.domains().map(\.id) == ["wesomecloud-v2"])
+    #expect(await manager.preserved == ["wesomecloud"])
+    #expect(try await repository.domains(accountID: account.id) == [selection])
+
+    try await service.restore([selection])
+    #expect(await manager.preserved == ["wesomecloud"])
+    #expect(try await manager.domains().count == 1)
 }
 
 @Test

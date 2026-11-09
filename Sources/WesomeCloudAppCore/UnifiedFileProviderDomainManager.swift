@@ -40,6 +40,11 @@ public actor UnifiedFileProviderDomainManager: FileProviderDomainManaging, FileP
 
     public func restoreSelections(_ selections: [CloudDomain]) async throws {
         let registered = try await manager.domains()
+        // Retire old locations before registering the replacement, which may use
+        // the same display name and disk location. Keep sync stores and queues intact.
+        for domain in registered where domain.id != Self.domain.id {
+            try await manager.removePreservingUserData(domainID: domain.id)
+        }
         if selections.isEmpty {
             if registered.contains(where: { $0.id == Self.domain.id }) {
                 try await manager.removePreservingUserData(domainID: Self.domain.id)
@@ -50,11 +55,6 @@ public actor UnifiedFileProviderDomainManager: FileProviderDomainManaging, FileP
             }
             try await signaler?.signalEnumerator(domainID: Self.domain.id, containerItemIdentifier: "NSFileProviderRootContainerItemIdentifier")
             try await signaler?.signalEnumerator(domainID: Self.domain.id, containerItemIdentifier: "NSFileProviderWorkingSetContainerItemIdentifier")
-        }
-        // Retain downloaded and unsynced Finder data when retiring old locations.
-        // Internal metadata IDs and upload queues are not changed by this migration.
-        for domain in registered where domain.id != Self.domain.id {
-            try await manager.removePreservingUserData(domainID: domain.id)
         }
     }
 }
