@@ -1612,15 +1612,16 @@ func fileProviderItemInfersIWorkPackageContentTypeAndCapabilities() {
 
     let item = WesomeFileProviderItem(item: providerItem)
 
-    #expect(item.contentType.identifier == "com.apple.iwork.pages.sffpages")
+    #expect(item.contentType.identifier == "com.apple.iwork.pages.pages")
+    #expect(item.contentType.conforms(to: .package))
 }
 
-@Test
-func fileProviderFolderMapsContainerCapabilities() {
+@Test(arguments: ["Documents", "patrik.simms@esome.com", "Archive.txt"])
+func fileProviderFolderMapsContainerCapabilities(filename: String) {
     let providerItem = ProviderItem(
         id: "folder-1",
         parentID: nil,
-        filename: "Documents",
+        filename: filename,
         kind: .folder,
         size: nil,
         contentVersion: Data("content".utf8),

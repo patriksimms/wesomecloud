@@ -32,12 +32,15 @@ public final class WesomeFileProviderItem: NSObject, NSFileProviderItem {
 
     public var contentType: UTType {
         if item.kind == .folder {
-            return item.filename.fileProviderContentType ?? .folder
+            if let contentType = item.filename.fileProviderContentType(conformingTo: .directory), !contentType.isDynamic {
+                return contentType
+            }
+            return .folder
         }
         if let contentType = item.contentType.flatMap({ UTType(tag: $0, tagClass: .mimeType, conformingTo: nil) }) {
             return contentType
         }
-        return item.filename.fileProviderContentType ?? .data
+        return item.filename.fileProviderContentType() ?? .data
     }
 
     public var capabilities: NSFileProviderItemCapabilities {
@@ -436,11 +439,11 @@ private extension NSFileProviderPage {
 }
 
 private extension String {
-    var fileProviderContentType: UTType? {
+    func fileProviderContentType(conformingTo type: UTType = .data) -> UTType? {
         guard let pathExtension = split(separator: ".").last.map(String.init), pathExtension != self else {
             return nil
         }
-        return UTType(filenameExtension: pathExtension)
+        return UTType(filenameExtension: pathExtension, conformingTo: type)
     }
 }
 #endif
