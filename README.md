@@ -12,14 +12,17 @@ Space updates that location without changing the other Spaces.
 
 On upgrading from a version that displayed dotted folder names as documents,
 the app rebuilds its Finder location once. Downloaded and unsynced Finder files
-are preserved outside the replacement location; their location is recorded in
-the diagnostic log. Check those preserved files for local edits. Selected Spaces,
-sync caches, and queued uploads retain their existing storage IDs.
+are preserved outside the replacement location. In Finder, choose Go > Go to
+Folder and enter `~/Library/Containers/cloud.wesome.wesomecloud/Data/Library/Application Support/WesomeCloud/Preserved Finder Files`.
+Open the private recovery notes there and use Go > Go to Folder with each
+recorded path. These notes are excluded from diagnostic exports. Check the
+preserved files for local edits. Selected Spaces, sync caches, and queued uploads
+retain their existing storage IDs.
 
 On upgrading from separate Finder locations, the app preserves downloaded and
 unsynced local files when retiring those locations. macOS returns their preserved
-location, which the app logs. Existing sync caches and upload queues keep their
-original storage IDs.
+location, which the app records in the same private recovery notes. Existing sync
+caches and upload queues keep their original storage IDs.
 
 ![WesomeCloud showing accounts, Spaces, transfers, and file availability](docs/images/wesomecloud.png)
 

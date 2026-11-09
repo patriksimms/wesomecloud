@@ -284,6 +284,9 @@ public final class SystemFileProviderDomainManager: FileProviderDomainManaging, 
         let domain = NSFileProviderDomain(identifier: NSFileProviderDomainIdentifier(domainID), displayName: domainID)
         let preservedURL = try await NSFileProviderManager.remove(domain, mode: .preserveDownloadedUserData)
         if let preservedURL {
+            let recoveryDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appending(path: "WesomeCloud/Preserved Finder Files")
+            try PreservedFinderFiles.record(preservedURL, in: recoveryDirectory)
             await WesomeLogger(category: "FileProviderDomain").info("Preserved files from retired Finder location at \(preservedURL.path)")
         }
     }
