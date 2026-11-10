@@ -147,6 +147,14 @@ and verifies Gatekeeper acceptance. It also staples the exported app and creates
 version. Increase `CFBundleVersion` in both host plists for every new build and
 keep their displayed versions in sync.
 
+The DMG opens in icon view with installation instructions and an arrow from
+WesomeCloud to Applications. `scripts/create-dmg.sh <app-path> <output.dmg>`
+builds this layout independently for local inspection without signing or
+publishing. It requires a logged-in macOS desktop and permission for the terminal
+to automate Finder. The background is rendered with AppKit at 1x and 2x by
+`scripts/dmg-background.swift`; icon positions and window size are set in
+`scripts/create-dmg.sh`. Keep these coordinates aligned when changing the layout.
+
 After stapling, Sparkle generates `build/updates/appcast.xml` and signs both the
 feed and final ZIP using Keychain. The script verifies their signatures and
 checks the appcast version, build, and ZIP length locally. Download URLs default
