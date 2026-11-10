@@ -69,7 +69,10 @@ APPLESCRIPT
 
 test -s "$work/volume/.DS_Store"
 sync
-hdiutil detach "$work/volume"
+if ! hdiutil detach "$work/volume"; then
+  sleep 2
+  hdiutil detach "$work/volume"
+fi
 mounted=false
 hdiutil convert "$work/layout.dmg" -format UDZO -o "$dmg_path" -ov
 echo "Disk image: $dmg_path"
