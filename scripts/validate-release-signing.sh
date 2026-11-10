@@ -336,12 +336,7 @@ xcrun stapler validate "$exported_app"
 spctl --assess --type execute --verbose=2 "$exported_app"
 
 dmg_path="${WESOME_CLOUD_DMG_PATH:-$PWD/build/WesomeCloud-$release_version.dmg}"
-staging="$(mktemp -d "${TMPDIR:-/tmp}/wesome-dmg.XXXXXX")"
-trap 'rm -rf "$staging"' EXIT
-/usr/bin/ditto "$exported_app" "$staging/WesomeCloud.app"
-ln -s /Applications "$staging/Applications"
-mkdir -p "$(dirname "$dmg_path")"
-hdiutil create -volname "WesomeCloud" -srcfolder "$staging" -format UDZO -ov "$dmg_path"
+scripts/create-dmg.sh "$exported_app" "$dmg_path"
 codesign --sign "$WESOME_CLOUD_SIGNING_IDENTITY" --timestamp "$dmg_path"
 codesign --verify --verbose=2 "$dmg_path"
 xcrun notarytool submit "$dmg_path" \
